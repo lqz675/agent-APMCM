@@ -1,0 +1,21 @@
+# Allowlist for `make package`. Default-deny: only paths matching one of these
+# patterns ship in waza.zip. New skills / new shippable assets MUST be added
+# here explicitly; this is the bug-fix replacement for the old denylist that
+# silently grew stale.
+#
+# Pattern syntax:
+#   exact/path/file.ext   -- exact file match
+#   prefix/**             -- everything under prefix/, recursively
+#   *.glob                -- fnmatch over the full path
+#
+# Structural excludes that override allowlist matches live in package-skill.sh
+# itself (per-skill SKILL.md, __pycache__, .pyc, .DS_Store).
+
+LICENSE
+README.md
+rules/**
+scripts/check_routing_drift.py
+scripts/setup-rule.sh
+scripts/setup-statusline.sh
+scripts/statusline.sh
+skills/**

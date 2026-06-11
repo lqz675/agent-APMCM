@@ -1,0 +1,833 @@
+import streamlit as st
+import os
+import sys
+import io
+from pathlib import Path
+from datetime import datetime
+
+APP_DIR = Path(__file__).parent
+sys.path.insert(0, str(APP_DIR))
+
+from rag import RAG
+from model import gpt_analysis, gpt_with_retry, chat
+from prompts import (
+    get_topic_selection_prompt,
+    get_modeling_prompt,
+    get_coding_prompt,
+    get_figure_prompt,
+    get_paper_writing_prompt,
+    get_polish_prompt,
+    get_pressure_test_prompt,
+    get_grill_me_prompt
+)
+from workflow_logger import WorkflowLogger
+from skills_bridge import SCIPILOT_DIR, GPT_ACADEMIC_DIR, SKILLS_DIR
+from skills_runner  import run_pressure_test, run_grill_me, run_code_check, get_skill_comparison
+from prd_generator  import generate_prd, generate_claude_md, export_prd_file
+from quota_monitor  import QuotaMonitor
+
+st.set_page_config(page_title="APMCM 数学建模 Agent", page_icon="🎓", layout="wide")
+
+
+@st.cache_resource
+def init_rag():
+    return RAG(
+        problems_dir="dataset/problems",
+        papers_dir="dataset/papers",
+        references_dir="dataset/references"
+    )
+
+
+if "rag" not in st.session_state:
+    with st.spinner("正在初始化 RAG 引擎，首次加载需要向量化全部 PDF (~1分钟)..."):
+        st.session_state.rag = init_rag()
+if "logger" not in st.session_state:
+    st.session_state.logger = WorkflowLogger()
+if "phase" not in st.session_state:
+    st.session_state.phase = "input"
+if "topics" not in st.session_state:
+    st.session_state.topics = []
+if "selected_topic" not in st.session_state:
+    st.session_state.selected_topic = None
+if "modeling_plan" not in st.session_state:
+    st.session_state.modeling_plan = None
+if "coding_result" not in st.session_state:
+    st.session_state.coding_result = None
+if "figure_descriptions" not in st.session_state:
+    st.session_state.figure_descriptions = None
+if "paper_draft" not in st.session_state:
+    st.session_state.paper_draft = None
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+if "session_id" not in st.session_state:
+    st.session_state.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+if "quota_monitor" not in st.session_state:
+    st.session_state.quota_monitor = QuotaMonitor(platform="Claude Sonnet")
+if "completed_stages" not in st.session_state:
+    st.session_state.completed_stages = []
+if "prd_draft" not in st.session_state:
+    st.session_state.prd_draft = ""
+if "prd_final" not in st.session_state:
+    st.session_state.prd_final = ""
+if "grill_rounds" not in st.session_state:
+    st.session_state.grill_rounds = 0
+if "pressure_report" not in st.session_state:
+    st.session_state.pressure_report = ""
+if "paper_sections" not in st.session_state:
+    st.session_state.paper_sections = {}   # {section_name: content}
+if "reference_loaded" not in st.session_state:
+    st.session_state.reference_loaded = False
+
+logger = st.session_state.logger
+rag = st.session_state.rag
+
+# === 全局侧边栏：进度 + 额度监控 + 提问入口 ===
+with st.sidebar:
+    st.header("📊 项目仪表盘")
+
+    # 进度追踪
+    all_stages = ["选题确认", "建模方法确认", "压力测试", "PRD生成",
+                  "需求对齐", "代码生成", "图表生成", "论文撰写", "论文润色"]
+    completed  = st.session_state.completed_stages
+    progress   = len(completed) / len(all_stages)
+
+    st.progress(progress, text=f"整体进度 {len(completed)}/{len(all_stages)}")
+    for s in all_stages:
+        icon = "✅" if s in completed else ("🔄" if s == st.session_state.get("phase", "") else "⏳")
+        st.caption(f"{icon} {s}")
+
+    st.divider()
+
+    # 额度监控
+    qm = st.session_state.quota_monitor
+    st.subheader("💰 Token 额度")
+
+    platform_choice = st.selectbox(
+        "当前平台",
+        ["Claude Sonnet", "Claude Opus 4.8", "ChatGPT-4o", "ChatGPT-5.5"],
+        key="platform_select"
+    )
+    if platform_choice != qm.platform:
+        st.session_state.quota_monitor = QuotaMonitor(platform=platform_choice)
+        qm = st.session_state.quota_monitor
+
+    st.code(qm.get_status_text(), language=None)
+
+    # 额度预警
+    should_alert, threshold = qm.should_alert()
+    if should_alert:
+        workspace = Path("workspace") / st.session_state.get("session_id", "default")
+        handoff   = qm.generate_handoff_doc(
+            session_id     = st.session_state.get("session_id", "default"),
+            current_stage  = st.session_state.get("phase", "未知"),
+            completed_stages = completed,
+            workspace_path = str(workspace.absolute()),
+            prd_summary    = st.session_state.get("prd_final", "")[:500],
+        )
+        st.warning(f"⚠️ 额度已用 {threshold*100:.0f}%，建议准备切换平台")
+        with st.expander("📋 查看任务交接文档"):
+            st.markdown(handoff)
+            buf = io.BytesIO(handoff.encode("utf-8"))
+            st.download_button("⬇️ 下载交接文档", buf, "任务交接.md", "text/markdown")
+
+    st.divider()
+
+    # Skill 对比查询
+    with st.expander("🛠️ Skills 说明"):
+        st.markdown(get_skill_comparison())
+
+    st.divider()
+
+    # 用户随时提问
+    st.subheader("💬 随时提问")
+    user_question = st.text_input("对当前项目有什么疑问？", key="sidebar_question", placeholder="例如：为什么选这个模型？")
+    if user_question and st.button("提问", key="sidebar_ask"):
+        ctx = f"""项目进度：{completed}
+当前阶段：{st.session_state.get('phase', '未知')}
+建模方案摘要：{st.session_state.get('modeling_plan', '')[:400]}
+PRD摘要：{st.session_state.get('prd_final', '')[:400]}"""
+        from model import gpt_with_retry
+        answer = gpt_with_retry(f"用户问题：{user_question}\n\n项目背景：{ctx}", max_tokens=500)
+        qm.record("用户提问", qm.estimate_tokens(answer))
+        st.info(answer)
+
+st.title("🎓 APMCM 数学建模比赛 Agent")
+st.caption("基于 RAG + LLM + 多Skill 协作的数学建模助手")
+
+# ============ Phase 1: Input ============
+if st.session_state.phase == "input":
+    st.header("📝 上传赛题 PDF")
+
+    def _extract_pdf(file_bytes):
+        from pypdf import PdfReader
+        from io import BytesIO
+        txt = ""
+        pdf = PdfReader(BytesIO(file_bytes))
+        for page in pdf.pages:
+            extracted = page.extract_text()
+            if extracted:
+                txt += extracted + "\n"
+        return txt.strip()
+
+    st.markdown("### 上传三个备选赛题 PDF 文件")
+    col1, col2, col3 = st.columns(3)
+    uploaded_texts = [None, None, None]
+    uploaded_names = [None, None, None]
+
+    for i, col in enumerate([col1, col2, col3]):
+        with col:
+            uploaded = st.file_uploader(
+                f"选题 {i+1}", type=["pdf"], key=f"upload_{i}",
+                help=f"上传赛题{i+1}的PDF文件"
+            )
+            if uploaded:
+                if f"extracted_{i}" not in st.session_state:
+                    with st.spinner(f"解析选题{i+1}..."):
+                        st.session_state[f"extracted_{i}"] = _extract_pdf(uploaded.read())
+                    st.session_state[f"uploaded_name_{i}"] = uploaded.name
+                uploaded_texts[i] = st.session_state[f"extracted_{i}"]
+                uploaded_names[i] = st.session_state[f"uploaded_name_{i}"]
+                st.success(f"已解析: {uploaded.name}")
+
+    if st.button("🚀 开始分析", type="primary", use_container_width=True):
+        topics = [t for t in uploaded_texts if t]
+        if not topics:
+            st.error("请至少上传一个赛题 PDF")
+        else:
+            st.session_state.topics = topics
+            logger.log_user_input(f"用户上传了{len(topics)}个赛题PDF: {[n for n in uploaded_names if n]}")
+            st.session_state.phase = "topic_selection"
+            st.rerun()
+
+# ============ Phase 2: Topic Selection ============
+elif st.session_state.phase == "topic_selection":
+    st.header("📊 选题分析")
+
+    topics = st.session_state.topics
+    if "topic_sims" not in st.session_state:
+        with st.spinner("正在检索历史数据,分析各选题..."):
+            sims_list = []
+            scores = []
+            for i, topic in enumerate(topics):
+                with st.status(f"分析选题 {i+1}..."):
+                    score, sims = rag.topic_coverage_score(topic, topk=5)
+                    scores.append(score)
+                    sims_list.append(sims)
+                    st.write(f"选题{i+1} 匹配分数: {score}")
+                    st.write(f"  - 相似历史题: {len(sims['sim_questions'])} 道")
+                    st.write(f"  - 相关论文: {len(sims['sim_papers'])} 篇")
+                    st.write(f"  - 参考文献: {len(sims['sim_refs'])} 篇")
+
+            prompt = get_topic_selection_prompt(topics, sims_list)
+            recommendation = gpt_with_retry(prompt)
+            st.session_state.topic_recommendation = recommendation
+            st.session_state.topic_sims = sims_list
+            st.session_state.topic_scores = scores
+            logger.log_topic_selection(topics, scores, recommendation)
+
+    st.markdown("### 🤖 Agent 选题推荐")
+    st.markdown(st.session_state.topic_recommendation)
+
+    st.divider()
+    st.markdown("### 📊 数据库匹配分数")
+    for i, (topic, score, sims) in enumerate(zip(topics, st.session_state.topic_scores, st.session_state.topic_sims)):
+        st.metric(f"选题{i+1}", f"{score} 分",
+                  f"相似题:{len(sims['sim_questions'])} | 论文:{len(sims['sim_papers'])} | 参考:{len(sims['sim_refs'])}")
+
+    col_a, col_b = st.columns(2)
+    with col_a:
+        selected_idx = st.selectbox("选择最终选题", range(len(topics)),
+                                    format_func=lambda x: f"选题{x+1}")
+    with col_b:
+        if st.button("✅ 确认选题,开始建模", type="primary"):
+            st.session_state.selected_topic = topics[selected_idx]
+            st.session_state.selected_topic_idx = selected_idx
+            st.session_state.selected_sims = st.session_state.topic_sims[selected_idx]
+            logger.log_user_feedback("topic_selection", f"用户选择选题{selected_idx+1}")
+            st.session_state.phase = "modeling"
+            st.rerun()
+
+# ============ Phase 3: Modeling ============
+elif st.session_state.phase == "modeling":
+    st.header("🔬 数学建模方案")
+
+    selected_topic = st.session_state.selected_topic
+    selected_sims = st.session_state.selected_sims
+
+    if "modeling_plan" not in st.session_state or st.session_state.modeling_plan is None:
+        with st.spinner("正在生成建模方案..."):
+            approach = st.session_state.get("user_approach", "")
+            prompt = get_modeling_prompt(selected_topic, selected_sims, approach)
+            modeling_plan = gpt_with_retry(prompt, max_tokens=6000)
+            st.session_state.modeling_plan = modeling_plan
+            logger.log_modeling(modeling_plan)
+
+    st.markdown(st.session_state.modeling_plan)
+
+    # === 步骤A：压力测试（在建模方案生成后自动触发）===
+    if st.session_state.get("modeling_plan") and not st.session_state.get("pressure_report"):
+        if st.button("🔬 运行压力测试（startup-pressure-test + star-up）", key="run_pressure"):
+            with st.spinner("正在运行 startup-pressure-test 和 star-up 技能..."):
+                report = run_pressure_test(
+                    question      = st.session_state.selected_topic,
+                    modeling_plan = st.session_state.modeling_plan,
+                )
+                st.session_state.pressure_report = report
+                qm = st.session_state.quota_monitor
+                qm.record("压力测试", qm.estimate_tokens(report))
+                if "压力测试" not in st.session_state.completed_stages:
+                    st.session_state.completed_stages.append("压力测试")
+
+    if st.session_state.get("pressure_report"):
+        with st.expander("📋 压力测试报告", expanded=True):
+            st.markdown(st.session_state.pressure_report)
+
+    # === 步骤B：生成 PRD ===
+    if st.session_state.get("pressure_report") and not st.session_state.get("prd_draft"):
+        if st.button("📄 生成 PRD（产品需求文档）", key="gen_prd"):
+            workspace = Path("workspace") / st.session_state.session_id
+            with st.spinner("正在生成 PRD..."):
+                prd = generate_prd(
+                    question       = st.session_state.selected_topic,
+                    modeling_plan  = st.session_state.modeling_plan,
+                    pressure_report= st.session_state.pressure_report,
+                    align_context  = {},
+                    session_id     = st.session_state.session_id,
+                )
+                st.session_state.prd_draft = prd
+                qm = st.session_state.quota_monitor
+                qm.record("PRD生成", qm.estimate_tokens(prd))
+                export_prd_file(prd, workspace, st.session_state.session_id)
+                if "PRD生成" not in st.session_state.completed_stages:
+                    st.session_state.completed_stages.append("PRD生成")
+
+    if st.session_state.get("prd_draft"):
+        with st.expander("📄 PRD 当前版本", expanded=True):
+            st.markdown(st.session_state.prd_draft)
+
+    # === 步骤C：grill-me 需求对齐循环 ===
+    if st.session_state.get("prd_draft"):
+        st.subheader("🔥 需求对齐（grill-me）")
+        st.caption(f"已对齐 {st.session_state.grill_rounds} 轮 | 建议 2-3 轮后确认最终 PRD")
+
+        user_prd_feedback = st.text_area(
+            "对 PRD 有什么不满意或想调整的地方？（直接说，AI 会追问并修订）",
+            key="prd_feedback",
+            placeholder="例如：我觉得用神经网络更合适 / 时间计划太紧 / 第3章结构不清晰..."
+        )
+        col_grill, col_confirm = st.columns(2)
+
+        with col_grill:
+            if st.button("💬 发起一轮对齐", key="run_grill") and user_prd_feedback:
+                with st.spinner("grill-me 追问分析中..."):
+                    grill_result = run_grill_me(st.session_state.prd_draft, user_prd_feedback)
+                    qm = st.session_state.quota_monitor
+                    qm.record("需求对齐", qm.estimate_tokens(grill_result))
+                    st.session_state.grill_rounds += 1
+
+                st.subheader("🎯 对齐分析与修订建议")
+                st.markdown(grill_result)
+                if "需求对齐" not in st.session_state.completed_stages:
+                    st.session_state.completed_stages.append("需求对齐")
+
+        with col_confirm:
+            if st.button("✅ PRD 已对齐，生成最终版 + CLAUDE.md", key="confirm_prd"):
+                workspace = Path("workspace") / st.session_state.session_id
+                workspace.mkdir(parents=True, exist_ok=True)
+
+                st.session_state.prd_final = st.session_state.prd_draft
+                claude_md_path = generate_claude_md(
+                    prd           = st.session_state.prd_final,
+                    modeling_plan = st.session_state.modeling_plan,
+                    workspace_path= workspace,
+                    session_id    = st.session_state.session_id,
+                )
+                qm = st.session_state.quota_monitor
+                qm.record("CLAUDE.md生成", 500)
+
+                st.success(f"✅ CLAUDE.md 已生成：`{claude_md_path}`")
+                st.code(f"cd {workspace.absolute()}\nopencode\n# 或\nclaude", language="bash")
+
+                # 加载 reference/（选题后第一次到这里才触发）
+                if not st.session_state.reference_loaded:
+                    from rag import RAG
+                    if hasattr(st.session_state, "rag") and st.session_state.rag.load_references():
+                        st.info("📚 reference/ 知识库已加载")
+                        st.session_state.reference_loaded = True
+
+                st.session_state.phase = "coding"
+                st.rerun()
+
+    st.divider()
+    user_approach = st.text_area("补充建模方向建议(可选)", key="user_approach_input",
+                                  placeholder="例如:希望使用动态规划方法...")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("🔄 重新生成方案"):
+            if user_approach:
+                st.session_state.user_approach = user_approach
+            del st.session_state.modeling_plan
+            st.rerun()
+    with col2:
+        if st.button("🧪 压力测试", type="primary"):
+            logger.log_user_feedback("modeling", "用户确认建模方案,进入压力测试")
+            st.session_state.phase = "pressure_test"
+            st.rerun()
+    with col3:
+        if st.button("⏭️ 跳过测试"):
+            logger.log_user_feedback("modeling", "用户跳过测试,直接进入代码生成")
+            st.session_state.phase = "coding"
+            st.rerun()
+
+# ============ Phase 4: Pressure Test ============
+elif st.session_state.phase == "pressure_test":
+    st.header("🧪 建模方案压力测试")
+
+    modeling_plan = st.session_state.modeling_plan
+
+    if "pressure_test_result" not in st.session_state:
+        with st.spinner("正在进行压力测试..."):
+            prompt = get_pressure_test_prompt(modeling_plan)
+            test_result = gpt_with_retry(prompt)
+            st.session_state.pressure_test_result = test_result
+            logger.log_pressure_test(test_result)
+
+    st.markdown(st.session_state.pressure_test_result)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🔄 返回修改方案"):
+            st.session_state.phase = "modeling"
+            st.rerun()
+    with col2:
+        if st.button("✅ 方案通过,对齐用户期望", type="primary"):
+            st.session_state.phase = "grill_me"
+            st.rerun()
+
+# ============ Phase 5: Grill Me ============
+elif st.session_state.phase == "grill_me":
+    st.header("🎯 用户期望对齐")
+
+    modeling_plan = st.session_state.modeling_plan
+    user_expectation = st.text_area(
+        "请输入你的预期和目标",
+        value=st.session_state.get("user_expectation", ""),
+        height=150,
+        placeholder="例如:我期望方案能够获得省级一等奖,并且代码实现简单..."
+    )
+
+    if st.button("🔍 评估方案是否符合预期", type="primary") and user_expectation:
+        with st.spinner("正在评估..."):
+            st.session_state.user_expectation = user_expectation
+            prompt = get_grill_me_prompt(modeling_plan, user_expectation)
+            grill_result = gpt_with_retry(prompt)
+            st.session_state.grill_result = grill_result
+            logger.log_grill_me(grill_result)
+
+    if "grill_result" in st.session_state:
+        st.markdown(st.session_state.grill_result)
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🔄 返回调整方案"):
+                st.session_state.phase = "modeling"
+                st.rerun()
+        with col2:
+            if st.button("✅ 方案对齐,开始编码", type="primary"):
+                st.session_state.phase = "coding"
+                st.rerun()
+
+# ============ Phase 6: Coding ============
+elif st.session_state.phase == "coding":
+    st.header("💻 代码生成")
+
+    if st.session_state.coding_result is None:
+        with st.spinner("正在生成Python代码..."):
+            prompt = get_coding_prompt(
+                st.session_state.selected_topic,
+                st.session_state.modeling_plan,
+                st.session_state.selected_sims
+            )
+            coding_result = gpt_with_retry(prompt, max_tokens=8000)
+            st.session_state.coding_result = coding_result
+            logger.log_coding(coding_result)
+
+    st.code(st.session_state.coding_result, language="python")
+
+    # === 代码审查（think + check + TDD）===
+    if st.session_state.get("coding_result"):
+        with st.expander("🔍 代码三重审查（think + check + TDD）", expanded=False):
+            if st.button("运行 Skill 审查", key="run_code_check"):
+                with st.spinner("运行 think / check / tdd 审查..."):
+                    review = run_code_check(st.session_state.coding_result)
+                    qm = st.session_state.quota_monitor
+                    qm.record("代码审查", qm.estimate_tokens(review))
+                    st.markdown(review)
+
+        # 每完成代码段，同步写论文节
+        st.subheader("📝 同步生成对应论文节")
+        section_name = st.selectbox("这段代码对应论文哪一节？",
+                                     ["3.1 模型建立", "3.2 求解方法", "4.1 结果分析", "4.2 敏感性分析"])
+        if st.button("📖 生成这一节论文初稿", key="gen_paper_section"):
+            with st.spinner(f"生成 {section_name} 初稿..."):
+                from model import gpt_with_retry
+                section_prompt = f"""根据以下代码实现，写出数学建模论文的 {section_name} 节。
+要求：学术语言，包含 LaTeX 公式，引用代码中的具体数值，300-500字。
+
+代码：
+{st.session_state.coding_result[:1500]}
+
+建模方案背景：
+{st.session_state.get('modeling_plan','')[:400]}"""
+                section = gpt_with_retry(section_prompt, max_tokens=800)
+                qm = st.session_state.quota_monitor
+                qm.record(f"论文节-{section_name}", qm.estimate_tokens(section))
+                st.session_state.paper_sections[section_name] = section
+
+                # 同时写到 workspace
+                workspace = Path("workspace") / st.session_state.session_id / "paper_sections"
+                workspace.mkdir(parents=True, exist_ok=True)
+                safe_name = section_name.replace(" ", "_").replace(".", "")
+                (workspace / f"{safe_name}.md").write_text(section, encoding="utf-8")
+
+            st.markdown(section)
+            st.success(f"✅ {section_name} 已保存")
+
+        # 向用户确认当前产出
+        st.info("👆 请确认以上代码和论文节是否符合预期，再进入下一阶段")
+        col_ok, col_redo = st.columns(2)
+        with col_ok:
+            if st.button("✅ 符合预期，继续", key="coding_ok"):
+                if "代码生成" not in st.session_state.completed_stages:
+                    st.session_state.completed_stages.append("代码生成")
+                st.session_state.phase = "figure"
+                st.rerun()
+        with col_redo:
+            if st.button("🔄 重新生成", key="coding_redo"):
+                st.session_state.coding_result = None
+                st.rerun()
+
+    # === 代码保存与 opencode 集成 ===
+    workspace = Path("workspace") / st.session_state.session_id
+    col_save, col_claude = st.columns(2)
+
+    with col_save:
+        if st.button("💾 保存代码到本地文件夹", key="save_code"):
+            workspace.mkdir(parents=True, exist_ok=True)
+            code_path = workspace / "model_solution.py"
+            code_path.write_text(st.session_state.coding_result, encoding="utf-8")
+
+            readme_content = f"""# 数学建模代码
+生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}
+赛题: {st.session_state.get('selected_topic', '')[:80]}
+
+## 运行方式
+```bash
+pip install pyomo scipy gekko matplotlib pandas numpy
+python model_solution.py
+```
+
+## 建模方案摘要
+{st.session_state.get('modeling_plan', '')[:400]}
+"""
+            (workspace / "README.md").write_text(readme_content, encoding="utf-8")
+            st.success(f"✅ 代码已保存到 `{workspace.absolute()}`")
+            st.code(f"cd {workspace.absolute()}\npython model_solution.py", language="bash")
+
+    with col_claude:
+        if st.button("🤖 生成 opencode 指令文件", key="gen_claude"):
+            workspace.mkdir(parents=True, exist_ok=True)
+            (workspace / "problem.txt").write_text(
+                st.session_state.get("selected_topic", ""), encoding="utf-8"
+            )
+            (workspace / "modeling_plan.md").write_text(
+                st.session_state.get("modeling_plan", ""), encoding="utf-8"
+            )
+
+            claudemd = f"""# 数学建模任务 — 由 APMCM Agent 生成
+生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}
+
+## 赛题（完整文本见 problem.txt）
+{st.session_state.get('selected_topic', '')[:300]}...
+
+## 已确认的建模方案（详见 modeling_plan.md）
+{st.session_state.get('modeling_plan', '')[:500]}...
+
+## 你需要完成的工作
+请在 `solution/` 子目录创建以下文件，每个文件写完后立即运行验证：
+
+1. `solution/data_processing.py`
+   - 数据读取和预处理
+   - 输出数据摘要统计和异常值检测结果
+
+2. `solution/model.py`
+   - 核心数学模型（按建模方案实现）
+   - 包含 validate_output() 函数自检
+   - 使用 Pyomo 或 Scipy（根据建模方案选择）
+
+3. `solution/solver.py`
+   - 调用 model.py 求解
+   - 格式化输出求解结果
+
+4. `solution/sensitivity.py`
+   - 对关键参数做敏感性分析
+   - 输出敏感性表格
+
+5. `solution/figures.py`
+   - 生成论文所需图表（Nature 期刊风格）
+   - 保存为 figures/fig_*.png
+
+## 约束
+- 所有代码使用中文注释
+- 每个模块有独立的 if __name__ == "__main__": 测试块
+- 有错误时打印具体原因，不要静默失败
+- 完成后在此 CLAUDE.md 底部追加运行结果摘要
+"""
+            (workspace / "CLAUDE.md").write_text(claudemd, encoding="utf-8")
+            st.success(f"✅ opencode 指令文件已生成")
+            st.code(f"cd {workspace.absolute()}\nopencode\n# 或\nclaude", language="bash")
+            st.info("在终端进入该目录后运行 opencode 或 claude，它会自动读取 CLAUDE.md 开始工作")
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("🔄 重新生成代码"):
+            del st.session_state.coding_result
+            st.rerun()
+    with col2:
+        if st.button("📊 生成图表", type="primary"):
+            st.session_state.phase = "figure"
+            st.rerun()
+    with col3:
+        if st.button("⏭️ 跳过图表"):
+            st.session_state.phase = "paper"
+            st.rerun()
+
+# ============ Phase 7: Figure ============
+elif st.session_state.phase == "figure":
+    st.header("📊 图表生成方案")
+
+    if st.session_state.figure_descriptions is None:
+        with st.spinner("正在设计图表方案..."):
+            prompt = get_figure_prompt(
+                st.session_state.selected_topic,
+                st.session_state.modeling_plan,
+                st.session_state.coding_result or ""
+            )
+            figure_desc = gpt_with_retry(prompt)
+            st.session_state.figure_descriptions = figure_desc
+            logger.log_figure(figure_desc)
+
+    st.markdown(st.session_state.figure_descriptions)
+
+    st.info("💡 安装 scipilot-figure-skill 后可直接在Python中生成图表:")
+    st.code(
+        "from skills_bridge import profile_data, setup_style, export_figure\n"
+        "# 示例: setup_style('nature'); export_figure(fig, 'result')",
+        language="python"
+    )
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🔄 重新生成图表方案"):
+            del st.session_state.figure_descriptions
+            st.rerun()
+    with col2:
+        if st.button("📝 生成论文初稿", type="primary"):
+            st.session_state.phase = "paper"
+            st.rerun()
+
+# ============ Phase 8: Paper ============
+elif st.session_state.phase == "paper":
+    st.header("📝 论文初稿")
+
+    if st.session_state.paper_draft is None:
+        with st.spinner("正在生成论文初稿..."):
+            prompt = get_paper_writing_prompt(
+                st.session_state.selected_topic,
+                st.session_state.modeling_plan,
+                st.session_state.coding_result or "",
+                st.session_state.figure_descriptions or ""
+            )
+            paper_draft = gpt_with_retry(prompt, max_tokens=8000)
+            st.session_state.paper_draft = paper_draft
+            logger.log_paper_draft(paper_draft)
+
+    st.markdown(st.session_state.paper_draft)
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("🔄 重新生成论文"):
+            del st.session_state.paper_draft
+            st.rerun()
+    with col2:
+        if st.button("✨ 润色论文", type="primary"):
+            st.session_state.phase = "polish"
+            st.rerun()
+    with col3:
+        if st.button("📥 导出完成"):
+            st.session_state.phase = "done"
+            st.rerun()
+
+# ============ Phase 9: Polish ============
+elif st.session_state.phase == "polish":
+    st.header("✨ 论文润色")
+
+    polish_type = st.selectbox("润色类型", ["润色", "翻译为英文", "学术语法修正", "逻辑优化"])
+
+    if st.button("🚀 开始润色", type="primary"):
+        with st.spinner(f"正在进行{polish_type}..."):
+            prompt = get_polish_prompt(st.session_state.paper_draft, polish_type)
+            polished = gpt_with_retry(prompt, max_tokens=8000)
+            st.session_state.polished_paper = polished
+            logger.log_paper_polish(polished)
+
+    if "polished_paper" in st.session_state:
+        st.markdown("### 润色结果")
+        st.markdown(st.session_state.polished_paper)
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🔄 重新润色"):
+                del st.session_state.polished_paper
+                st.rerun()
+        with col2:
+            if st.button("📥 完成,查看总结", type="primary"):
+                st.session_state.phase = "done"
+                st.rerun()
+
+        # === 论文导出 ===
+        st.divider()
+        st.subheader("📄 导出论文")
+        export_col1, export_col2 = st.columns(2)
+
+        with export_col1:
+            if st.button("📥 导出为 Word 文档 (.docx)", key="export_docx"):
+                try:
+                    from docx import Document as DocxDocument
+                    from docx.shared import Pt, Inches
+                    from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+                    paper_text = st.session_state.get(
+                        "polished_paper",
+                        st.session_state.get("paper_draft", "")
+                    )
+
+                    doc = DocxDocument()
+
+                    title = doc.add_heading("数学建模竞赛论文", 0)
+                    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+                    for line in paper_text.split("\n"):
+                        line = line.strip()
+                        if not line:
+                            continue
+                        if line.startswith("# "):
+                            doc.add_heading(line[2:], level=1)
+                        elif line.startswith("## "):
+                            doc.add_heading(line[3:], level=2)
+                        elif line.startswith("### "):
+                            doc.add_heading(line[4:], level=3)
+                        elif line.startswith("$$") or line.startswith("\\begin"):
+                            p = doc.add_paragraph()
+                            run = p.add_run(f"[公式] {line}")
+                            run.font.name = "Courier New"
+                            run.font.size = Pt(9)
+                        else:
+                            doc.add_paragraph(line)
+
+                    buf = io.BytesIO()
+                    doc.save(buf)
+                    buf.seek(0)
+
+                    st.download_button(
+                        label="⬇️ 点击下载 .docx",
+                        data=buf.getvalue(),
+                        file_name=f"apmcm_paper_{st.session_state.session_id}.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        key="download_docx"
+                    )
+                except ImportError:
+                    st.error("请先安装 python-docx：pip install python-docx")
+
+        with export_col2:
+            if st.button("📝 导出为 Markdown 文件", key="export_md"):
+                paper_text = st.session_state.get(
+                    "polished_paper",
+                    st.session_state.get("paper_draft", "")
+                )
+                workspace = Path("workspace") / st.session_state.session_id
+                workspace.mkdir(parents=True, exist_ok=True)
+                paper_path = workspace / "paper.md"
+                paper_path.write_text(paper_text, encoding="utf-8")
+                st.success(f"✅ 论文已保存到 `{paper_path.absolute()}`")
+                st.code(
+                    f"# 转换为 PDF（需要安装 pandoc 和 xelatex）\n"
+                    f"cd {workspace.absolute()}\n"
+                    f"pandoc paper.md -o paper.pdf --pdf-engine=xelatex "
+                    f"-V mainfont='SimSun' -V geometry:margin=2.5cm",
+                    language="bash"
+                )
+
+# ============ Done ============
+elif st.session_state.phase == "done":
+    st.header("🎉 工作流程完成!")
+
+    summary = logger.get_summary()
+    st.markdown(f"""
+    ### 会话总结
+    - **Session ID**: {summary['session_id']}
+    - **总步骤数**: {summary['total_steps']}
+    - **日志文件**: `{summary['log_file']}`
+    - **Markdown日志**: `{summary['md_file']}`
+    """)
+
+    st.markdown("### 各阶段完成情况")
+    for phase, count in summary['phases'].items():
+        st.markdown(f"- {phase}: {count} 步")
+
+    st.divider()
+    st.markdown("### 📄 最终产出")
+
+    tab1, tab2, tab3, tab4 = st.tabs(["建模方案", "代码", "图表方案", "论文"])
+
+    with tab1:
+        if st.session_state.modeling_plan:
+            st.markdown(st.session_state.modeling_plan)
+    with tab2:
+        if st.session_state.coding_result:
+            st.code(st.session_state.coding_result, language="python")
+    with tab3:
+        if st.session_state.figure_descriptions:
+            st.markdown(st.session_state.figure_descriptions)
+    with tab4:
+        paper = st.session_state.get("polished_paper") or st.session_state.paper_draft
+        if paper:
+            st.markdown(paper)
+
+    if st.button("🔄 开始新会话"):
+        for key in list(st.session_state.keys()):
+            if key not in ["rag"]:
+                del st.session_state[key]
+        st.session_state.logger = WorkflowLogger()
+        st.session_state.rag = rag
+        st.session_state.phase = "input"
+        st.rerun()
+
+# ============ Chat ============
+st.divider()
+st.header("💬 与Agent对话")
+chat_input = st.chat_input("向Agent提问或提供反馈...")
+if chat_input:
+    st.session_state.chat_history.append({"role": "user", "content": chat_input})
+    with st.spinner("Agent思考中..."):
+        ctx = f"""当前阶段: {st.session_state.phase}
+当前选题: {st.session_state.get('selected_topic', '未选择')[:500]}
+建模方案摘要: {st.session_state.get('modeling_plan', '未生成')[:1000]}"""
+        response = chat([
+            {"role": "system", "content": f"你是APMCM数学建模Agent助手。\n{ctx}"},
+            {"role": "user", "content": chat_input}
+        ])
+    st.session_state.chat_history.append({"role": "assistant", "content": response})
+
+for msg in st.session_state.chat_history:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])

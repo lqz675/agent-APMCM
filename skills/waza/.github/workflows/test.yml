@@ -1,0 +1,30 @@
+name: test
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y jq ripgrep python3 python3-pip
+      - name: Install pytest for unit layer
+        run: python3 -m pip install --user --break-system-packages pytest
+      - name: Install shellcheck (pinned to keep CI behavior reproducible from local dev)
+        env:
+          SHELLCHECK_VERSION: v0.10.0
+          SHELLCHECK_SHA256: 6c881ab0698e4e6ea235245f22832860544f17ba386442fe7e9d629f8cbedf87
+        run: |
+          set -euo pipefail
+          tarball="shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          curl -fsSL -o "$tarball" \
+            "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/${tarball}"
+          echo "${SHELLCHECK_SHA256}  ${tarball}" | sha256sum -c -
+          tar -xJf "$tarball"
+          sudo install -m 0755 "shellcheck-${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
+          rm -rf "shellcheck-${SHELLCHECK_VERSION}" "$tarball"
+          shellcheck --version
+      - run: make test
