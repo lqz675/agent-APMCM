@@ -12,7 +12,8 @@ PERSISTENT_FIELDS = [
     "session_id",
     "chat_history",
     "selected_topic",
-    "topics_text",
+    "selected_topic_idx",
+    "selected_sims",
     "topics",
     "modeling_plan",
     "prd_draft",
@@ -29,6 +30,13 @@ PERSISTENT_FIELDS = [
     "paper_sections",
     "grill_rounds",
     "reference_loaded",
+    "topic_recommendation",
+    "topic_sims",
+    "topic_scores",
+]
+UPLOAD_EXTRACT_FIELDS = [
+    "extracted_0", "extracted_1", "extracted_2",
+    "uploaded_name_0", "uploaded_name_1", "uploaded_name_2",
 ]
 
 
@@ -49,7 +57,8 @@ def save_session(session_id, state):
         tmp_path = session_dir / "session_state.json.tmp"
 
         to_save = {"saved_at": datetime.now().isoformat()}
-        for field in PERSISTENT_FIELDS:
+        all_fields = PERSISTENT_FIELDS + UPLOAD_EXTRACT_FIELDS
+        for field in all_fields:
             val = state.get(field)
             if val is None:
                 continue

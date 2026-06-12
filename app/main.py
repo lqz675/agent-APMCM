@@ -465,12 +465,28 @@ if st.session_state.phase == "input":
 
     if st.button("🚀 开始分析", type="primary", use_container_width=True):
         topics = [t for t in uploaded_texts if t]
+        # 若 file_uploader 为空，尝试从已保存的路径重新提取
         if not topics:
-            for i in range(3):
-                extracted = st.session_state.get(f"extracted_{i}")
-                if extracted:
-                    topics.append(extracted)
-                    uploaded_names[i] = st.session_state.get(f"uploaded_name_{i}", f"选题{i+1}")
+            saved_paths = st.session_state.get("uploaded_file_paths", [])
+            for i, sp in enumerate(saved_paths[:3]):
+                pp = Path(sp)
+                if pp.exists() and pp.suffix.lower() == ".pdf":
+                    try:
+                        if f"extracted_{i}" not in st.session_state or not st.session_state.get(f"extracted_{i}"):
+                            st.session_state[f"extracted_{i}"] = _extract_pdf(pp.read_bytes())
+                        if f"uploaded_name_{i}" not in st.session_state or not st.session_state.get(f"uploaded_name_{i}"):
+                            st.session_state[f"uploaded_name_{i}"] = pp.name
+                        topics.append(st.session_state[f"extracted_{i}"])
+                        uploaded_names[i] = st.session_state[f"uploaded_name_{i}"]
+                    except Exception:
+                        pass
+            # 同时回退旧的 extracted_{i} 检查
+            if not topics:
+                for i in range(3):
+                    extracted = st.session_state.get(f"extracted_{i}")
+                    if extracted and extracted not in topics:
+                        topics.append(extracted)
+                        uploaded_names[i] = st.session_state.get(f"uploaded_name_{i}", f"选题{i+1}")
         if not topics:
             st.error("请至少上传一个赛题 PDF")
         else:
