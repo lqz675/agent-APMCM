@@ -609,10 +609,36 @@ elif st.session_state.phase == "modeling":
     selected_topic = st.session_state.selected_topic
     selected_sims = st.session_state.selected_sims
 
+    # 显示 inbox/data/ 中可用的数据文件
+    data_path = Path(__file__).resolve().parent.parent / "inbox" / "data"
+    available_data = list_data_files(data_path)
+    if available_data:
+        data_names = [f["name"] for f in available_data]
+        selected_data = st.multiselect(
+            "选择需要使用的数据文件（将加入建模上下文）",
+            options=data_names,
+            default=data_names[:1] if data_names else [],
+            help="选中的文件内容会注入到建模方案生成 Prompt 中"
+        )
+    else:
+        selected_data = []
+
     if "modeling_plan" not in st.session_state or st.session_state.modeling_plan is None:
         with st.spinner("正在生成建模方案..."):
+            data_context = ""
+            if selected_data:
+                for name in selected_data:
+                    if name in st.session_state.get("loaded_data_files", {}):
+                        data_context += f"\n\n### 数据文件: {name}\n{st.session_state.loaded_data_files[name]}"
+                    else:
+                        from app.inbox_watcher import read_data_file
+                        summary = read_data_file(name)
+                        st.session_state.loaded_data_files[name] = summary
+                        data_context += f"\n\n### 数据文件: {name}\n{summary}"
             approach = st.session_state.get("user_approach", "")
             prompt = get_modeling_prompt(selected_topic, selected_sims, approach)
+            if data_context:
+                prompt += f"\n\n## 可用数据文件\n{data_context}"
             modeling_plan = gpt_with_retry(prompt, max_tokens=6000)
             st.session_state.modeling_plan = modeling_plan
             logger.log_modeling(modeling_plan)
