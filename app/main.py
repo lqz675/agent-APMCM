@@ -544,6 +544,15 @@ elif st.session_state.phase == "topic_selection":
         st.session_state.memory_logger.log_system_event("返回阶段: input", "用户从选题分析返回")
         autosave()
         st.rerun()
+    # → 下一阶段（选题→建模）
+    has_modeling = st.session_state.get("modeling_plan") is not None
+    if st.button("→ 建模方案", key="next_to_modeling", disabled=not has_modeling,
+                 help="需先生成建模方案" if not has_modeling else "进入建模方案阶段"):
+        st.session_state.phase = "modeling"
+        st.session_state.memory_logger.new_stage("modeling")
+        st.session_state.memory_logger.log_system_event("进入阶段: modeling")
+        autosave()
+        st.rerun()
 
     topics = st.session_state.topics
     if "topic_sims" not in st.session_state:
@@ -603,6 +612,14 @@ elif st.session_state.phase == "modeling":
         st.session_state.phase = "topic_selection"
         st.session_state.memory_logger.new_stage("topic_selection")
         st.session_state.memory_logger.log_system_event("返回阶段: topic_selection")
+        autosave()
+        st.rerun()
+    has_coding = st.session_state.get("coding_result") is not None
+    if st.button("→ 代码生成", key="next_to_coding", disabled=not has_coding,
+                 help="需先生成代码" if not has_coding else "进入代码生成阶段"):
+        st.session_state.phase = "coding"
+        st.session_state.memory_logger.new_stage("coding")
+        st.session_state.memory_logger.log_system_event("进入阶段: coding")
         autosave()
         st.rerun()
 
@@ -990,6 +1007,14 @@ elif st.session_state.phase == "coding":
         st.session_state.memory_logger.new_stage("modeling")
         autosave()
         st.rerun()
+    has_figure = st.session_state.get("figure_descriptions") is not None
+    if st.button("→ 图表方案", key="next_to_figure", disabled=not has_figure,
+                 help="需先生成图表方案" if not has_figure else "进入图表方案阶段"):
+        st.session_state.phase = "figure"
+        st.session_state.memory_logger.new_stage("figure")
+        st.session_state.memory_logger.log_system_event("进入阶段: figure")
+        autosave()
+        st.rerun()
 
     # ── 准备文件夹：保存所有输入文件为 .md ──
     prepare_dir = WS / "coding" / str(n) / f"prepare_{n}"
@@ -1174,6 +1199,14 @@ elif st.session_state.phase == "figure":
         st.session_state.memory_logger.new_stage("coding")
         autosave()
         st.rerun()
+    has_paper = st.session_state.get("paper_draft") is not None
+    if st.button("→ 论文初稿", key="next_to_paper", disabled=not has_paper,
+                 help="需先生成论文初稿" if not has_paper else "进入论文初稿阶段"):
+        st.session_state.phase = "paper"
+        st.session_state.memory_logger.new_stage("paper")
+        st.session_state.memory_logger.log_system_event("进入阶段: paper")
+        autosave()
+        st.rerun()
 
     if st.session_state.figure_descriptions is None:
         with st.spinner("正在设计图表方案..."):
@@ -1226,6 +1259,14 @@ elif st.session_state.phase == "paper":
     if st.button("⬅️ 返回图表方案", key="back_to_figure"):
         st.session_state.phase = "figure"
         st.session_state.memory_logger.new_stage("figure")
+        autosave()
+        st.rerun()
+    has_polish = st.session_state.get("polished_paper") is not None
+    if st.button("→ 论文润色", key="next_to_polish", disabled=not has_polish,
+                 help="需先生成润色版论文" if not has_polish else "进入论文润色阶段"):
+        st.session_state.phase = "polish"
+        st.session_state.memory_logger.new_stage("polish")
+        st.session_state.memory_logger.log_system_event("进入阶段: polish")
         autosave()
         st.rerun()
 
@@ -1298,6 +1339,13 @@ elif st.session_state.phase == "polish":
     if st.button("⬅️ 返回论文初稿", key="back_to_paper"):
         st.session_state.phase = "paper"
         st.session_state.memory_logger.new_stage("paper")
+        autosave()
+        st.rerun()
+    # done is always reachable from polish
+    if st.button("→ 完成", key="next_to_done"):
+        st.session_state.phase = "done"
+        st.session_state.memory_logger.new_stage("done")
+        st.session_state.memory_logger.log_system_event("进入阶段: done")
         autosave()
         st.rerun()
 
