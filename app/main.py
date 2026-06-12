@@ -481,18 +481,14 @@ if st.session_state.phase == "input":
                 st.success(f"已保存: {uploaded.name}")
                 st.rerun()
 
-    # 从已有文件读取文本（跳过已解析的）
+    # 从已有文件读取文本
     for i in range(3):
         if topic_files[i]:
             pdf_path = topic_files[i]
-            cache_key = f"extracted_{i}"
-            if not st.session_state.get(cache_key) or st.session_state.get(f"_file_mtime_{i}") != pdf_path.stat().st_mtime:
-                st.session_state[cache_key] = _extract_pdf(pdf_path.read_bytes())
-                st.session_state[f"_file_mtime_{i}"] = pdf_path.stat().st_mtime
+            st.session_state[f"extracted_{i}"] = _extract_pdf(pdf_path.read_bytes())
             st.session_state[f"uploaded_name_{i}"] = pdf_path.name
-            if st.session_state.get(cache_key):
-                uploaded_texts[i] = st.session_state[cache_key]
-                uploaded_names[i] = pdf_path.name
+            uploaded_texts[i] = st.session_state[f"extracted_{i}"]
+            uploaded_names[i] = pdf_path.name
 
     if st.button("🚀 开始分析", type="primary", use_container_width=True):
         topics = []
