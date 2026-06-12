@@ -1072,43 +1072,6 @@ elif st.session_state.phase == "coding":
             st.success(f"代码已生成并保存到 `{code_output_dir.absolute()}`")
             autosave()
 
-    # === 代码审查（think + check + TDD）===
-    if st.session_state.get("coding_result"):
-        with st.expander("🔍 代码三重审查（think + check + TDD）", expanded=False):
-            if st.button("运行 Skill 审查", key="run_code_check"):
-                with st.spinner("运行 think / check / tdd 审查..."):
-                    review = run_code_check(st.session_state.coding_result)
-                    qm = st.session_state.quota_monitor
-                    qm.record("代码审查", qm.estimate_tokens(review))
-                    st.markdown(review)
-
-        st.subheader("📝 同步生成对应论文节")
-        section_name = st.selectbox("这段代码对应论文哪一节？",
-                                     ["3.1 模型建立", "3.2 求解方法", "4.1 结果分析", "4.2 敏感性分析"])
-        if st.button("📖 生成这一节论文初稿", key="gen_paper_section"):
-            with st.spinner(f"生成 {section_name} 初稿..."):
-                from model import gpt_with_retry
-                section_prompt = f"""根据以下代码实现，写出数学建模论文的 {section_name} 节。
-要求：学术语言，包含 LaTeX 公式，引用代码中的具体数值，300-500字。
-
-代码：
-{st.session_state.coding_result[:1500]}
-
-建模方案背景：
-{st.session_state.get('modeling_plan','')[:400]}"""
-                section = gpt_with_retry(section_prompt, max_tokens=800)
-                qm = st.session_state.quota_monitor
-                qm.record(f"论文节-{section_name}", qm.estimate_tokens(section))
-                st.session_state.paper_sections[section_name] = section
-
-                writing_dir = Path(__file__).resolve().parent.parent / "workspace" / "writing"
-                writing_dir.mkdir(parents=True, exist_ok=True)
-                safe_name = section_name.replace(" ", "_").replace(".", "")
-                (writing_dir / f"{safe_name}.md").write_text(section, encoding="utf-8")
-
-            st.markdown(section)
-            st.success(f"✅ {section_name} 已保存")
-
     # 代码显示
     if st.session_state.get("coding_result"):
         st.code(st.session_state.coding_result, language="python")
@@ -1121,30 +1084,61 @@ elif st.session_state.phase == "coding":
                     qm.record("代码审查", qm.estimate_tokens(review))
                     st.markdown(review)
 
-        # 论文节
+        # ── 论文节：LLM 先理解再总结到 prepare 文件夹 ──
         st.subheader("📝 同步生成对应论文节")
-        section_name = st.selectbox("这段代码对应论文哪一节？",
-                                     ["3.1 模型建立", "3.2 求解方法", "4.1 结果分析", "4.2 敏感性分析"])
-        if st.button("📖 生成这一节论文初稿", key="gen_paper_section"):
-            with st.spinner(f"生成 {section_name} 初稿..."):
-                from model import gpt_with_retry
-                section_prompt = f"""根据以下代码实现，写出数学建模论文的 {section_name} 节。
-要求：学术语言，包含 LaTeX 公式，引用代码中的具体数值，300-500字。
+        writing_prep = WS / "writing" / str(n) / "prepare"
+        writing_prep.mkdir(parents=True, exist_ok=True)
 
-代码：
-{st.session_state.coding_result[:1500]}
+        # LLM 理解代码并总结
+        if not (writing_prep / "code_summary.md").exists():
+            if st.button("🧠 理解代码并生成摘要", key="btn_code_summary"):
+                with st.spinner("LLM 正在阅读代码..."):
+                    from model import gpt_with_retry
+                    code_summary = gpt_with_retry(
+                        f"请阅读以下 Python 代码，用中文总结：1)核心算法 2)输入输出 3)关键参数 4)主要函数。\n\n{st.session_state.coding_result[:3000]}",
+                        max_tokens=800)
+                    (writing_prep / "code_summary.md").write_text(code_summary, encoding="utf-8")
+                st.success("代码摘要已保存")
+                st.rerun()
 
-建模方案背景：
-{st.session_state.get('modeling_plan','')[:400]}"""
-                section = gpt_with_retry(section_prompt, max_tokens=800)
-                qm.record(f"论文节-{section_name}", qm.estimate_tokens(section))
-                st.session_state.paper_sections[section_name] = section
-                writing_dir = WS / "writing"
-                writing_dir.mkdir(parents=True, exist_ok=True)
-                safe_name = section_name.replace(" ", "_").replace(".", "")
-                (writing_dir / f"{safe_name}.md").write_text(section, encoding="utf-8")
-            st.markdown(section)
-            st.success(f"✅ {section_name} 已保存到 workspace/writing/")
+        # LLM 理解建模方案并总结
+        if not (writing_prep / "model_summary.md").exists():
+            if st.button("🧠 理解建模方案并生成摘要", key="btn_model_summary"):
+                with st.spinner("LLM 正在阅读建模方案..."):
+                    from model import gpt_with_retry
+                    model_summary = gpt_with_retry(
+                        f"请阅读以下建模方案，用中文总结：1)数学模型 2)假设条件 3)求解方法 4)创新点。\n\n{st.session_state.get('modeling_plan','')[:3000]}",
+                        max_tokens=800)
+                    (writing_prep / "model_summary.md").write_text(model_summary, encoding="utf-8")
+                st.success("建模方案摘要已保存")
+                st.rerun()
+
+        # 展示 prepare 文件夹已有哪些文件
+        existing_preps = list(writing_prep.glob("*.md"))
+        if existing_preps:
+            st.caption(f"prepare 文件夹 ({writing_prep.absolute()}):")
+            for f in existing_preps:
+                st.text(f"  ✅ {f.name}")
+
+        # 生成论文节
+        if existing_preps:
+            section_name = st.selectbox("选择论文章节",
+                                         ["3.1 模型建立", "3.2 求解方法", "4.1 结果分析", "4.2 敏感性分析"])
+            if st.button("📖 生成这一节论文初稿", key="gen_paper_section"):
+                with st.spinner(f"从 prepare 文件夹读取并生成 {section_name}..."):
+                    from model import gpt_with_retry
+                    prep_text = ""
+                    for f in sorted(writing_prep.glob("*.md")):
+                        prep_text += f"\n## {f.stem}\n{f.read_text(encoding='utf-8')[:1500]}"
+                    section = gpt_with_retry(
+                        f"根据以下项目摘要，写出数学建模论文的 {section_name} 节。学术语言，含 LaTeX 公式，300-500字。\n\n{prep_text}",
+                        max_tokens=800)
+                    qm.record(f"论文节-{section_name}", qm.estimate_tokens(section))
+                    st.session_state.paper_sections[section_name] = section
+                    safe_name = section_name.replace(" ", "_").replace(".", "")
+                    (WS / "writing" / str(n) / f"{safe_name}.md").write_text(section, encoding="utf-8")
+                st.markdown(section)
+                st.success(f"✅ {section_name} 已保存")
 
         # 导航
         st.info("👆 确认代码后进入下一阶段")
@@ -1225,6 +1219,9 @@ elif st.session_state.phase == "figure":
 # ============ Phase 8: Paper ============
 elif st.session_state.phase == "paper":
     st.header("📝 论文初稿")
+    WS = Path(__file__).resolve().parent.parent / "workspace"
+    n = st.session_state.get("selected_topic_idx", 0) + 1
+    writing_dir = WS / "writing" / str(n)
 
     if st.button("⬅️ 返回图表方案", key="back_to_figure"):
         st.session_state.phase = "figure"
@@ -1232,18 +1229,38 @@ elif st.session_state.phase == "paper":
         autosave()
         st.rerun()
 
+    # 汇总各阶段论文节
+    section_files = list((writing_dir).glob("sec_*.md")) if writing_dir.exists() else []
+    st.caption(f"已有 {len(section_files)} 节论文初稿在 `{writing_dir.absolute()}`")
+    if section_files:
+        for f in sorted(section_files):
+            st.text(f"  📄 {f.name}")
+
     if st.session_state.paper_draft is None:
-        with st.spinner("正在生成论文初稿..."):
-            prompt = get_paper_writing_prompt(
-                st.session_state.selected_topic,
-                st.session_state.modeling_plan,
-                st.session_state.coding_result or "",
-                st.session_state.figure_descriptions or ""
-            )
+        with st.spinner("正在综合各节生成完整论文..."):
+            # 优先从写作文件夹汇总，否则用原始 prompt
+            if section_files:
+                parts = []
+                for f in sorted(section_files):
+                    parts.append(f.read_text(encoding="utf-8"))
+                section_text = "\n\n".join(parts)
+                prompt = f"""请将以下各节论文内容整合为一篇完整的数学建模竞赛论文。
+要求：摘要→问题重述→模型建立→求解→检验→评价→参考文献，学术语言，LaTeX 公式。
+
+{section_text}"""
+            else:
+                prompt = get_paper_writing_prompt(
+                    st.session_state.selected_topic,
+                    st.session_state.modeling_plan,
+                    st.session_state.coding_result or "",
+                    st.session_state.figure_descriptions or ""
+                )
             paper_draft = gpt_with_retry(prompt, max_tokens=8000)
             st.session_state.paper_draft = paper_draft
             logger.log_paper_draft(paper_draft)
-            autosave()
+            writing_dir.mkdir(parents=True, exist_ok=True)
+            (writing_dir / "paper_complete.md").write_text(paper_draft, encoding="utf-8")
+            st.caption(f"完整论文已保存到 `{writing_dir.absolute() / 'paper_complete.md'}`")
 
     st.markdown(st.session_state.paper_draft)
 
@@ -1292,6 +1309,9 @@ elif st.session_state.phase == "polish":
             polished = gpt_with_retry(prompt, max_tokens=8000)
             st.session_state.polished_paper = polished
             logger.log_paper_polish(polished)
+            writing_dir = Path(__file__).resolve().parent.parent / "workspace" / "writing"
+            writing_dir.mkdir(parents=True, exist_ok=True)
+            (writing_dir / "paper_polished.md").write_text(polished, encoding="utf-8")
 
     if "polished_paper" in st.session_state:
         st.markdown("### 润色结果")
