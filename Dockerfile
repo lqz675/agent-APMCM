@@ -11,7 +11,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-RUN mkdir -p logs workspace dataset/cache
+RUN mkdir -p logs workspace dataset/cache inbox memory
 
 EXPOSE 8501
 

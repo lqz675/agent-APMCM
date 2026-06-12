@@ -9,6 +9,8 @@ services:
     volumes:
       - ./.env:/app/.env:ro
       - ./dataset:/app/dataset
+      - ./inbox:/app/inbox
+      - ./memory:/app/memory
       - ./logs:/app/logs
       - ./workspace:/app/workspace
     environment:

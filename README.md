@@ -2,16 +2,32 @@
 
 基于 RAG + LLM + 多 Skill 协作的数学建模竞赛辅助系统，覆盖从选题到论文润色的全流程自动化。
 
-## 快速上手（3 步）
+## 快速上手
 
-### 1. 配置 API Key
+### 方式一：Docker 部署（推荐）
 
-```powershell
+```bash
 cd agent
-Copy-Item .env.example .env
+cp .env.example .env      # 编辑 .env，填入 API 密钥
+docker-compose up -d       # 浏览器访问 http://localhost:8501
 ```
 
-用记事本打开 `.env`，填入两个必填密钥：
+> `dataset/`、`inbox/`、`memory/`、`logs/`、`workspace/` 目录自动挂载到宿主机，数据持久化。
+
+### 方式二：本地部署
+
+```bash
+cd agent
+cp .env.example .env      # 编辑 .env，填入 API 密钥（见下方说明）
+pip install -r requirements.txt
+python -m streamlit run app/main.py --server.headless true
+```
+
+浏览器访问 **http://localhost:8501**，首次启动自动向量化 PDF（约 1 分钟）。
+
+### API Key 配置
+
+编辑 `.env`，填入两个必填密钥：
 
 ```
 DEEPSEEK_API_KEY=sk-xxxxxxxx        # 在 https://platform.deepseek.com/api_keys 获取
