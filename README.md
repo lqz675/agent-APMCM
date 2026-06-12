@@ -1,215 +1,186 @@
 # APMCM 数学建模 Agent
 
-基于 RAG + LLM + 多 Skill 协作的数学建模竞赛辅助系统，覆盖从选题到论文润色的全流程自动化。
+基于 RAG + LLM + 多 Skill 协作的数学建模竞赛辅助系统。
 
 ## 快速上手
 
-### 方式一：Docker 部署（推荐）
+### 1. 配置 API Key
 
-```bash
-cd agent
-cp .env.example .env      # 编辑 .env，填入 API 密钥
-docker-compose up -d       # 浏览器访问 http://localhost:8501
+复制 `.env.example` 为 `.env`，用记事本打开填入密钥：
+
+```
+DEEPSEEK_API_KEY=sk-xxxxxxxx     # https://platform.deepseek.com/api_keys
+NVIDIA_API_KEY=nvapi-xxxxxxxx    # https://build.nvidia.com
 ```
 
-> `dataset/`、`inbox/`、`memory/`、`logs/`、`workspace/` 目录自动挂载到宿主机，数据持久化。
-
-### 方式二：本地部署
+### 2. 安装 & 启动
 
 ```bash
-cd agent
-cp .env.example .env      # 编辑 .env，填入 API 密钥（见下方说明）
 pip install -r requirements.txt
 python -m streamlit run app/main.py --server.headless true
 ```
 
-浏览器访问 **http://localhost:8501**，首次启动自动向量化 PDF（约 1 分钟）。
+浏览器访问 **http://localhost:8501**。首次启动会向量化 `dataset/` 中的 PDF（约 1 分钟），之后秒开。
 
-### API Key 配置
-
-编辑 `.env`，填入两个必填密钥：
-
-```
-DEEPSEEK_API_KEY=sk-xxxxxxxx        # 在 https://platform.deepseek.com/api_keys 获取
-NVIDIA_API_KEY=nvapi-xxxxxxxx       # 在 https://build.nvidia.com 获取
-```
-
-可选（启用重排序精排时配置其一）：
-
-```
-JINA_API_KEY=       # https://jina.ai
-COHERE_API_KEY=     # https://dashboard.cohere.com
-QWEN_API_KEY=       # https://bailian.console.aliyun.com
-```
-
-### 2. 安装依赖
-
-```powershell
-pip install -r requirements.txt
-```
-
-### 3. 启动
-
-```powershell
-python -m streamlit run app/main.py --server.headless true
-```
-
-浏览器访问 **http://localhost:8501**，首次启动会自动向量化 PDF（约 1 分钟），之后秒开。
+> Docker 部署：`docker-compose up -d`
 
 ---
 
-## 功能概览
+## 界面布局
 
 ```
-上传赛题 PDF
-  → 选题分析（RAG 检索历史赛题 + LLM 评分推荐）
-  → 建模方案 + 压力测试 + PRD + 需求对齐
-  → 代码生成 + think/check/tdd 三重审查 + 论文节同步
-  → 图表方案设计
-  → 论文初稿
-  → 论文润色（润色/英译/语法修正/逻辑优化）+ 导出 Word/Markdown
+┌─ 左侧边栏 ─────────────┬─ 中间操作区 ─────────────────┬─ 右侧 ─┐
+│ 项目仪表盘（进度）       │                              │        │
+│ Token 额度监控           │   各阶段操作界面              │ 可选   │
+│ 文件收件箱               │   （上传/选题/建模/代码…）    │ 折叠   │
+│ AI 协作 / Skills         │                              │ 对话区 │
+│ 随时提问                 │   模型输出结果展示            │        │
+└─────────────────────────┴──────────────────────────────┴────────┘
+                              │
+                    底部全宽对话输入框
 ```
 
-### 侧边栏工具
+---
 
-| 模块 | 说明 |
+## 完整工作流程
+
+### 阶段 1：上传赛题
+
+1. 将 3 个备选赛题 PDF 分别放入 `workspace/upload/1/` `2/` `3/` 文件夹，或在界面 file_uploader 中上传
+2. 点击 **🚀 开始分析** → 清除历史结果 → 进入选题分析
+
+> 要删除选题：直接删除对应文件夹中的 PDF 文件，或点击界面 🗑️ 按钮
+
+### 阶段 2：选题分析
+
+- Agent 用 RAG 检索历史赛题和获奖论文，为 3 个选题打分
+- 展示 LLM 推荐理由和数据库匹配分数
+- 用户选择最终选题 → 点击 **✅ 确认选题**
+
+导航：**⬅️ 返回上传** | **→ 建模方案**（如果已生成则亮起，否则灰色不可点击）
+
+### 阶段 3：建模方案
+
+核心阶段，包含多个步骤：
+
+| 步骤 | 按钮 | 说明 |
+|------|------|------|
+| 生成方案 | 自动 | LLM 生成：问题分析 → 符号说明 → 3 种方案对比 → 推荐推导 → 创新点 |
+| 选择数据 | 多选框 | 从 `inbox/data/` 选择 CSV/Excel 文件注入 Prompt |
+| 压力测试 | 🔬 运行压力测试 | Skill 评估技术/时间/数据可行性 |
+| 生成 PRD | 📄 生成 PRD | 输出 7 章结构化产品需求文档 → `workspace/PRD.md` |
+| 生成 CLAUDE.md | 🤖 生成 CLAUDE.md | LLM 读取 `prepare_claude/` 文件夹内容后生成操作手册 |
+| 需求对齐 | 💬 发起对齐 | grill-me 循环：用户反馈 → AI 追问 → 修订建议 |
+| 确认 PRD | ✅ PRD 已对齐 | 确认最终版，进入编码 |
+
+**外部参考**：可以在底部选择 `inbox/web_ai/` 中的 `.md` 文件或上传 `.md`，点击 🔄 重新生成方案时 LLM 会综合这些内容。
+
+**重新生成规则**：点击 🔄 重新生成方案 → 旧结果归档到 `workspace/rubbish/` → 清空下游 → 从头生成
+
+### 阶段 4：代码生成
+
+进入后自动准备：
+
+```
+workspace/coding/{选题号}/prepare_{选题号}/
+├── topic.md           # 赛题
+├── modeling_plan.md   # 建模方案
+├── references.md      # 相似题/论文参考
+├── PRD.md             # 产品需求文档
+├── CLAUDE.md          # 执行规范
+└── *.csv / *.xlsx     # 数据文件
+```
+
+界面展示所有准备文件的清单。点击 **🚀 开始生成代码** → LLM 读取全部 `.md` 文件 → 生成 Python 代码 → 自动保存到 `workspace/coding/{选题号}/solution.py`。
+
+代码审查和论文节同步：
+
+| 按钮 | 说明 |
 |------|------|
-| 项目仪表盘 | 8 阶段进度追踪 |
-| Token 额度 | 实时用量监控，70%/90% 自动预警，一键生成多平台交接文档 |
-| 文件收件箱 | 拖文件到 `inbox/` 目录，点击扫描即可加载 PDF 到知识库；支持 CSV/Excel 数据文件加载 |
-| AI 网页版协作 | 导出当前阶段上下文给 ChatGPT/Claude 网页版，读取回复并注入工作流 |
-| Skills 说明 | 内置 6 个 Skill 说明 |
-| 随时提问 | 基于当前项目背景的 AI 问答 |
+| 运行 Skill 审查 | think + check + tdd 三重审查 |
+| 🧠 理解代码并生成摘要 | LLM 阅读代码 → `writing/{n}/prepare/code_summary.md` |
+| 🧠 理解建模方案并生成摘要 | LLM 阅读方案 → `writing/{n}/prepare/model_summary.md` |
+| 📖 生成这一节论文初稿 | 从 prepare 文件夹读取摘要 → 生成对应论文章节 |
+
+### 阶段 5：图表方案
+
+- LLM 设计图表清单（带编号：图表1-1 线性回归曲线）
+- 方案文本保存到 `workspace/picture/figure_plan.md`
+- 实际图表图片在代码运行后生成到 `workspace/picture/fig_*.png`
+
+### 阶段 6：论文初稿
+
+- 自动汇总 `workspace/writing/{选题号}/` 下所有节论文
+- 如果已有分节论文 → 整合为完整论文
+- 如果无分节 → LLM 从头生成完整论文
+- 保存到 `workspace/writing/{选题号}/paper_complete.md`
+
+### 阶段 7：论文润色
+
+- 4 种润色类型：润色 / 翻译为英文 / 学术语法修正 / 逻辑优化
+- 润色结果保存到 `workspace/writing/{选题号}/paper_polished.md`
+- 可导出为 Word (.docx) 或 Markdown
 
 ---
 
-## 三种文件输入方式
+## 导航规则
 
-| 方式 | 操作 | 适用场景 |
-|------|------|----------|
-| 浏览器上传 | 界面点击 Browse files 选择 PDF | 开始新赛题 |
-| inbox 拖放 | 将 PDF 拖入 `inbox/problems/` 等目录，点"扫描新文件" | 补充文献、知识库 |
-| 网页 AI 回复 | 回复保存到 `inbox/web_ai/`，侧边栏输入文件名读取 | 与 ChatGPT/Claude 协作 |
+每个阶段顶部有双向导航按钮：
 
-### 数据文件（CSV / Excel）
+| ← 返回 | → 前进 | 启用条件 |
+|--------|--------|----------|
+| — | 🚀 开始分析 | 至少一个文件 |
+| 返回上传 | → 建模方案 | `modeling_plan` 已存在 |
+| 返回选题 | → 代码生成 | `coding_result` 已存在 |
+| 返回建模 | → 图表方案 | `figure_descriptions` 已存在 |
+| 返回代码 | → 论文初稿 | `paper_draft` 已存在 |
+| 返回图表 | → 论文润色 | `polished_paper` 已存在 |
+| 返回论文 | → 完成 | 始终可用 |
 
-将数据文件放入 `inbox/data/`，在侧边栏"文件收件箱"中点击 **加载**。后续在对话中说"分析数据"即可自动引用，代码生成阶段也会自动注入。
-
----
-
-## 对话关键词
-
-| 说这句话 | 效果 |
-|----------|------|
-| "使用网页AI方案" 或 "应用网页AI回复" | 将已读取的网页 AI 回复注入上下文 |
-| "分析数据" 或 "数据文件" | 将已加载的 CSV/Excel 数据摘要注入上下文 |
+**→ 按钮灰色** = 下一阶段还没生成，不可点击。仅浏览不触发任何操作。**🔄 重新生成**才会清除下游并归档旧结果。
 
 ---
 
-## 项目结构
+## 文件系统结构
 
 ```
-agent/
-├── app/
-│   ├── main.py              # Streamlit 界面 + 9 阶段工作流引擎
-│   ├── rag.py               # FAISS 向量检索引擎（BM25 + HyDE + Rerank）
-│   ├── model.py             # LLM / Embedding / Rerank 多 API 调用层
-│   ├── prompts.py           # 8 个阶段 Prompt 模板
-│   ├── utils.py             # PDF/CSV/Excel 文件读取、文本分块
-│   ├── skills_runner.py     # 统一 Skill 调用入口（pressure-test/grill-me/think/check/tdd）
-│   ├── prd_generator.py     # PRD + CLAUDE.md 自动生成
-│   ├── quota_monitor.py     # Token 额度监控 + 平台切换
-│   ├── inbox_watcher.py     # inbox/ 目录文件扫描与加载
-│   ├── webai_bridge.py      # 网页版 AI 协作上下文导出/导入
-│   ├── memory_logger.py     # 实时对话记忆（按 session + 阶段分文件）
-│   ├── skills_bridge.py     # 外部 Skill 桥接层
-│   └── workflow_logger.py   # 工作流日志 (JSON + Markdown)
-├── dataset/                 # 系统知识库（启动时加载）
-│   ├── problems/            # 历年赛题 PDF
-│   ├── papers/              # 获奖论文 PDF
-│   ├── references/          # 参考文献 PDF
-│   ├── knowledge/           # 领域知识库 PDF
-│   ├── data/                # 结构化数据 (raw/processed/external)
-│   └── cache/               # 向量缓存 (.npy)
-├── inbox/                   # 文件收件箱（拖放即加载）
-│   ├── problems/ / papers/ / references/ / knowledge/
-│   ├── web_ai/              # 网页版 AI 回复
-│   └── data/                # CSV/Excel 数据文件
-├── memory/                  # 对话记忆（每条消息实时写入）
-├── skills/                  # 外部 Skill 仓库
-├── workspace/               # 产出目录（运行时生成）
-├── logs/                    # 工作流日志
-├── introduce/               # 架构文档 + 操作手册
-├── requirements.txt
-└── .env.example
+workspace/
+├── upload/               # 赛题上传（1/2/3 文件夹，固定位置）
+│   ├── 1/                # 赛题1 PDF
+│   ├── 2/                # 赛题2 PDF
+│   └── 3/                # 赛题3 PDF
+├── PRD.md                # 产品需求文档（建模阶段生成）
+├── CLAUDE.md             # AI 操作手册（LLM 理解后生成）
+├── prepare_claude/       # CLAUDE.md 生成前的准备工作文件
+├── coding/               # 代码输出
+│   └── {n}/              # 选题编号
+│       ├── prepare_{n}/  # 代码生成的输入文件
+│       └── solution.py   # 生成的代码
+├── writing/              # 论文输出
+│   └── {n}/
+│       ├── prepare/      # 代码/方案摘要（LLM 先行理解）
+│       ├── *_*.md        # 分节论文
+│       ├── paper_complete.md   # 完整论文
+│       └── paper_polished.md   # 润色版
+├── picture/              # 图表输出
+│   ├── figure_plan.md    # 图表方案说明
+│   └── fig_*.png         # 运行代码生成的图片
+└── rubbish/              # 归档旧结果（按时间戳分目录）
 ```
+
+**关键原则**：所有文件在 `workspace/` 本地生成，前端仅用于展示。刷新/重启后可从文件恢复进度。
 
 ---
 
-## 数据集
+## 对话记忆
 
-| 目录 | 格式 | 何时加载 |
-|------|------|----------|
-| `dataset/problems/` | PDF | 启动时 |
-| `dataset/papers/` | PDF | 启动时 |
-| `dataset/references/` | PDF | 启动时 |
-| `dataset/knowledge/` | PDF | 启动时 |
-| `dataset/reference/` | PDF | 选题确认后 |
-| `inbox/problems/` | PDF | 手动扫描 |
-| `inbox/papers/` | PDF | 手动扫描 |
-| `inbox/knowledge/` | PDF | 手动扫描 |
-| `inbox/data/` | CSV/Excel | 手动加载 |
-
-> 不放数据也能用，Agent 凭 LLM 自身知识仍可工作，但推荐精度会下降。
+所有对话实时写入 `memory/{session_id}/stage_*.md`，每个阶段一个文件。即使刷新页面，对话记录也不会丢失。
 
 ---
 
 ## Token 额度监控
 
-每次 LLM 调用后自动估算 token 消耗，侧边栏实时显示进度条。触发 70%/90% 预警时自动生成多平台任务交接文档，支持切换到 ChatGPT / Cursor / Codex / Claude Code 继续工作。
-
----
-
-## RAG 检索技术栈
-
-- **分块策略**: 头尾分块（前 1500 + 后 1500 字符）
-- **向量模型**: NVIDIA nv-embed-v1（4096 维）
-- **向量索引**: FAISS IndexFlatIP（余弦相似度，L2 归一化）
-- **混合检索**: FAISS（60%）+ BM25（40%）
-- **查询增强**: HyDE（LLM 生成假设文档再检索）
-- **精排**: Jina / Qwen / Cohere 三通道降级
-
----
-
-## 内置 Skill
-
-| Skill | 用途 | 所属阶段 |
-|-------|------|----------|
-| startup-pressure-test | 方案可行性报告（技术/时间/数据三维度） | 建模 |
-| grill-me | PRD 需求对齐追问 | 建模 |
-| think | 设计决策审查 | 编码 |
-| check | 正确性/健壮性/规范检查 | 编码 |
-| tdd | 测试驱动验证 | 编码 |
-| scipilot-figure | 科学图表生成（Nature 风格） | 图表 |
-| gpt_academic | 论文润色与翻译（71 插件） | 润色 |
-
----
-
-## 产出文件
-
-每次会话在 `workspace/{session_id}/` 下生成：
-
-```
-PRD.md                # 产品需求文档
-CLAUDE.md             # Claude Code / opencode 操作手册
-model_solution.py     # 生成的 Python 代码
-solution/             # 模块化代码（data_processing/model/solver/sensitivity/figures）
-paper_sections/       # 论文各节 Markdown
-webai_collab/         # 网页版 AI 导出上下文包
-quota_log.json        # Token 用量日志
-```
-
-对话记忆保存在 `memory/{session_id}/stage_*.md`，每条消息实时写入。
+侧边栏实时显示用量进度条。触发 70%/90% 预警时自动生成多平台任务交接文档。
 
 ---
 
@@ -217,8 +188,3 @@ quota_log.json        # Token 用量日志
 
 - 架构详情：`introduce/architecture.md`
 - 操作手册：`introduce/user-guide.md`
-- 变更日志：`update/`
-
-## License
-
-MIT
