@@ -1258,9 +1258,28 @@ elif st.session_state.phase == "done":
         )
         st.rerun()
 
-# ============ Chat ============
+# ═══════════════════════════════════════════════════════════
+# 💬 对话面板（始终可见，与工作区独立）
+# ═══════════════════════════════════════════════════════════
 st.divider()
-st.header("💬 与Agent对话")
+chat_col, chat_info_col = st.columns([4, 1])
+with chat_col:
+    st.header("💬 与 Agent 对话")
+with chat_info_col:
+    chat_count = len(st.session_state.get("chat_history", []))
+    st.caption(f"共 {chat_count} 条消息")
+
+chat_container = st.container(height=400, border=True)
+with chat_container:
+    if st.session_state.get("chat_history"):
+        for msg in st.session_state.chat_history:
+            role_label = "🧑 你" if msg["role"] == "user" else "🤖 Agent"
+            with st.chat_message(msg["role"]):
+                st.markdown(f"**{role_label}** — {msg['content'][:2000]}")
+    else:
+        st.caption("对话记录将在这里显示。上传赛题后即可与 Agent 交流。")
+
+st.caption("")
 chat_input = st.chat_input("向Agent提问或提供反馈...")
 if chat_input:
     webai_content = st.session_state.get("webai_imported_content", "")
@@ -1307,9 +1326,6 @@ PRD: {(st.session_state.get('prd_final') or st.session_state.get('prd_draft') or
         response = chat(messages_to_send)
     st.session_state.chat_history.append({"role": "assistant", "content": response})
     st.session_state.memory_logger.log_message("assistant", response)
-
-for msg in st.session_state.chat_history:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+    st.rerun()
 
 autosave()
