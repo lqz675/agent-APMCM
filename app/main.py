@@ -639,6 +639,9 @@ elif st.session_state.phase == "modeling":
             prompt = get_modeling_prompt(selected_topic, selected_sims, approach)
             if data_context:
                 prompt += f"\n\n## 可用数据文件\n{data_context}"
+            refs = st.session_state.pop("_modeling_refs", "")
+            if refs:
+                prompt += f"\n\n## 外部参考文件\n{refs}\n\n请综合以上参考内容重新优化建模方案。"
             modeling_plan = gpt_with_retry(prompt, max_tokens=6000)
             st.session_state.modeling_plan = modeling_plan
             logger.log_modeling(modeling_plan)
@@ -783,6 +786,29 @@ workspace/
                 st.rerun()
 
     st.divider()
+    # 综合外部 md 文件重新生成方案
+    st.subheader("📥 综合外部参考重新生成方案")
+    web_ai_dir = Path(__file__).resolve().parent.parent / "inbox" / "web_ai"
+    web_ai_files = []
+    if web_ai_dir.exists():
+        for f in web_ai_dir.glob("*.md"):
+            web_ai_files.append(f.name)
+        for f in web_ai_dir.glob("*.txt"):
+            web_ai_files.append(f.name)
+
+    # 方式A：从 inbox/web_ai/ 选择已有文件
+    extra_context = ""
+    if web_ai_files:
+        selected_ref = st.multiselect("从 inbox/web_ai/ 选择参考文件", web_ai_files, key="ref_files")
+        if selected_ref:
+            for fn in selected_ref:
+                extra_context += f"\n\n### {fn}\n{(web_ai_dir / fn).read_text(encoding='utf-8')[:3000]}"
+
+    # 方式B：直接上传 .md 文件
+    uploaded_md = st.file_uploader("或上传 .md 文件", type=["md", "txt"], key="upload_md_ref")
+    if uploaded_md:
+        extra_context += f"\n\n### {uploaded_md.name}\n{uploaded_md.read().decode('utf-8')[:3000]}"
+
     user_approach = st.text_area("补充建模方向建议(可选)", key="user_approach_input",
                                   placeholder="例如:希望使用动态规划方法...")
     col1, col2, col3 = st.columns(3)
@@ -791,6 +817,9 @@ workspace/
             clear_downstream("modeling")
             if user_approach:
                 st.session_state.user_approach = user_approach
+            # 保存外部参考上下文供下次生成使用
+            if extra_context:
+                st.session_state._modeling_refs = extra_context
             del st.session_state.modeling_plan
             st.rerun()
     with col2:
@@ -925,6 +954,7 @@ elif st.session_state.phase == "coding":
             for ws_file, label in [(ws / "PRD.md", "PRD"), (ws / "CLAUDE.md", "CLAUDE")]:
                 if ws_file.exists():
                     prompt += f"\n\n## {label}.md\n{ws_file.read_text(encoding='utf-8')[:2000]}"
+            prompt += f"\n\n所有图表使用 matplotlib 生成后保存到: {ws.absolute()}\\picture 目录，文件名格式如 fig_1_1_线性回归曲线.png"
             coding_result = gpt_with_retry(prompt, max_tokens=8000)
             st.session_state.coding_result = coding_result
             logger.log_coding(coding_result)
