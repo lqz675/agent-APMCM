@@ -175,10 +175,66 @@ PHASE_DOWNSTREAM = {
     "paper":         ["polished_paper"],
 }
 
-def clear_downstream(phase):
-    """回到某阶段时，清除该阶段及之后所有下游结果"""
+PHASE_FILES = {
+    "modeling":      ["PRD.md", "CLAUDE.md", "prepare_claude/"],  # modeling stage files in workspace/
+    "coding":        [],  # handled by folder move
+    "figure":        [],  # picture/ folder
+    "paper":         [],  # writing/ folder
+}
+
+def rubbish_downstream(phase):
+    """归档下游结果：移入 workspace/rubbish/{phase}_{timestamp}/，并清除 session_state"""
+    import shutil
+    from datetime import datetime
+    rb = Path(__file__).resolve().parent.parent / "workspace" / "rubbish"
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    rb_dir = rb / f"{phase}_{ts}"
+    rb_dir.mkdir(parents=True, exist_ok=True)
+
+    ws = Path(__file__).resolve().parent.parent / "workspace"
+    n = st.session_state.get("selected_topic_idx", 0) + 1
+
+    # 移动 workspace/ 下的阶段文件
+    for fname in PHASE_FILES.get(phase, []):
+        src = ws / fname
+        if src.exists():
+            if src.is_dir():
+                shutil.move(str(src), str(rb_dir / fname))
+            else:
+                shutil.move(str(src), str(rb_dir / fname))
+
+    # 移动文件夹（按阶段）
+    if phase in ("modeling", "topic_selection"):
+        for d in ["coding", "writing", "picture"]:
+            src = ws / d
+            if src.exists():
+                shutil.move(str(src), str(rb_dir / d))
+                # 重建空目录
+                src.mkdir(parents=True, exist_ok=True)
+                (src / "upload").mkdir(parents=True, exist_ok=True)
+        (ws / "coding").mkdir(parents=True, exist_ok=True)
+        (ws / "writing").mkdir(parents=True, exist_ok=True)
+        (ws / "picture").mkdir(parents=True, exist_ok=True)
+        (ws / "upload").mkdir(parents=True, exist_ok=True)
+    elif phase == "coding":
+        for d in [f"coding/{n}", f"writing/{n}", "picture"]:
+            src = ws / d
+            if src.exists():
+                shutil.move(str(src), str(rb_dir / d))
+                src.mkdir(parents=True, exist_ok=True)
+    elif phase == "figure":
+        for d in [f"writing/{n}"]:
+            src = ws / d
+            if src.exists():
+                shutil.move(str(src), str(rb_dir / d))
+                src.mkdir(parents=True, exist_ok=True)
+
+    # 清除 session_state 下游键
     for key in PHASE_DOWNSTREAM.get(phase, []):
         st.session_state.pop(key, None)
+
+    if any(rb_dir.iterdir()):
+        st.toast(f"📦 旧结果已归档到 rubbish/{phase}_{ts[:13]}", icon="📦")
 
 def autosave():
     """保存当前 session 状态到磁盘（带错误保护）"""
@@ -514,15 +570,8 @@ if st.session_state.phase == "input":
         if not topics:
             st.error("请至少上传一个赛题 PDF")
         else:
-            # 清除上次所有分析结果，从当前文件重新开始
-            for key in ["topic_sims", "topic_scores", "topic_recommendation",
-                        "modeling_plan", "coding_result", "paper_draft",
-                        "pressure_report", "prd_draft", "prd_final",
-                        "figure_descriptions", "polished_paper", "paper_sections",
-                        "selected_topic", "selected_topic_idx", "selected_sims",
-                        "completed_stages", "grill_rounds", "pressure_test_result",
-                        "grill_result"]:
-                st.session_state.pop(key, None)
+            # 归档旧结果，从当前文件重新开始
+            rubbish_downstream("topic_selection")
             st.session_state.topics = topics
             logger.log_user_input(f"用户上传了{len(topics)}个赛题PDF: {[n for n in uploaded_names if n]}")
             st.session_state.phase = "topic_selection"
@@ -884,7 +933,7 @@ workspace/
     col1, col2, col3 = st.columns(3)
     with col1:
         if st.button("🔄 重新生成方案"):
-            clear_downstream("modeling")
+            rubbish_downstream("modeling")
             if user_approach:
                 st.session_state.user_approach = user_approach
             # 保存外部参考上下文供下次生成使用
@@ -1179,14 +1228,14 @@ elif st.session_state.phase == "coding":
                 st.rerun()
         with col_redo:
             if st.button("🔄 重新生成", key="coding_redo"):
-                clear_downstream("coding")
+                rubbish_downstream("coding")
                 st.session_state.coding_result = None
                 st.rerun()
 
     col1, col2, col3 = st.columns(3)
     with col1:
         if st.button("🔄 重新生成代码"):
-            clear_downstream("coding")
+            rubbish_downstream("coding")
             del st.session_state.coding_result
             st.rerun()
 
@@ -1235,7 +1284,7 @@ elif st.session_state.phase == "figure":
     col1, col2 = st.columns(2)
     with col1:
         if st.button("🔄 重新生成图表方案"):
-            clear_downstream("figure")
+            rubbish_downstream("figure")
             del st.session_state.figure_descriptions
             st.rerun()
     with col2:
@@ -1308,7 +1357,7 @@ elif st.session_state.phase == "paper":
     col1, col2, col3 = st.columns(3)
     with col1:
         if st.button("🔄 重新生成论文"):
-            clear_downstream("paper")
+            rubbish_downstream("paper")
             del st.session_state.paper_draft
             st.rerun()
     with col2:
