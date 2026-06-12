@@ -646,16 +646,15 @@ elif st.session_state.phase == "modeling":
 
     st.markdown(st.session_state.modeling_plan)
 
-    # === 步骤A：压力测试（在建模方案生成后自动触发）===
+    # === 步骤A：压力测试 ===
     if st.session_state.get("modeling_plan") and not st.session_state.get("pressure_report"):
-        if st.button("🔬 运行压力测试（startup-pressure-test + star-up）", key="run_pressure"):
-            with st.spinner("正在运行 startup-pressure-test 和 star-up 技能..."):
+        if st.button("🔬 运行压力测试", key="run_pressure"):
+            with st.spinner("正在运行压力测试..."):
                 report = run_pressure_test(
                     question      = st.session_state.selected_topic,
                     modeling_plan = st.session_state.modeling_plan,
                 )
                 st.session_state.pressure_report = report
-                qm = st.session_state.quota_monitor
                 qm.record("压力测试", qm.estimate_tokens(report))
                 if "压力测试" not in st.session_state.completed_stages:
                     st.session_state.completed_stages.append("压力测试")
@@ -665,22 +664,23 @@ elif st.session_state.phase == "modeling":
         with st.expander("📋 压力测试报告", expanded=True):
             st.markdown(st.session_state.pressure_report)
 
-    # === 步骤B：生成 PRD ===
-    if st.session_state.get("pressure_report") and not st.session_state.get("prd_draft"):
-        if st.button("📄 生成 PRD（产品需求文档）", key="gen_prd"):
-            workspace = Path("workspace") / st.session_state.session_id
+    # === 步骤B：生成并保存 PRD 到 workspace/ 文件夹 ===
+    if st.session_state.get("modeling_plan") and not st.session_state.get("prd_draft"):
+        if st.button("📄 生成 PRD 并保存到 workspace/", key="gen_prd"):
+            workspace_dir = Path(__file__).resolve().parent.parent / "workspace"
             with st.spinner("正在生成 PRD..."):
                 prd = generate_prd(
                     question       = st.session_state.selected_topic,
                     modeling_plan  = st.session_state.modeling_plan,
-                    pressure_report= st.session_state.pressure_report,
+                    pressure_report= st.session_state.get("pressure_report", ""),
                     align_context  = {},
                     session_id     = st.session_state.session_id,
                 )
                 st.session_state.prd_draft = prd
-                qm = st.session_state.quota_monitor
                 qm.record("PRD生成", qm.estimate_tokens(prd))
-                export_prd_file(prd, workspace, st.session_state.session_id)
+                prd_path = workspace_dir / "PRD.md"
+                prd_path.write_text(prd, encoding="utf-8")
+                st.success(f"✅ PRD 已保存到 `{prd_path.absolute()}`")
                 if "PRD生成" not in st.session_state.completed_stages:
                     st.session_state.completed_stages.append("PRD生成")
                 autosave()
@@ -688,8 +688,51 @@ elif st.session_state.phase == "modeling":
     if st.session_state.get("prd_draft"):
         with st.expander("📄 PRD 当前版本", expanded=True):
             st.markdown(st.session_state.prd_draft)
+        if st.button("💾 重新保存 PRD 到 workspace/", key="resave_prd"):
+            prd_path = Path(__file__).resolve().parent.parent / "workspace" / "PRD.md"
+            prd_path.write_text(st.session_state.prd_draft, encoding="utf-8")
+            st.success(f"✅ 已覆盖保存到 `{prd_path.absolute()}`")
 
-    # === 步骤C：grill-me 需求对齐循环 ===
+    # === 步骤C：生成 CLAUDE.md ===
+    if st.session_state.get("modeling_plan"):
+        if st.button("🤖 生成 CLAUDE.md 到 workspace/", key="gen_claude_md"):
+            workspace_dir = Path(__file__).resolve().parent.parent / "workspace"
+            claude_md = f"""# 数学建模任务 — APMCM Agent 生成
+生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}
+
+## 赛题
+{st.session_state.get('selected_topic', '')[:500]}
+
+## 建模方案摘要
+{st.session_state.get('modeling_plan', '')[:1000]}
+
+## PRD 摘要
+{st.session_state.get('prd_draft', '（未生成）')[:500]}
+
+## 压力测试摘要
+{st.session_state.get('pressure_report', '（未运行）')[:500]}
+
+## 执行规范
+- 编码前: think（设计决策审查）
+- 编码中: tdd（测试驱动开发）
+- 编码后: check（正确性/健壮性检查）
+- 遇Bug: hunt（定位修复）
+
+## 文件结构
+```
+workspace/
+├── model_solution.py     # 核心求解代码
+├── figures/              # 图表输出
+└── results/              # 计算结果
+```
+"""
+            claude_path = workspace_dir / "CLAUDE.md"
+            claude_path.write_text(claude_md, encoding="utf-8")
+            qm.record("CLAUDE.md生成", 500)
+            st.success(f"✅ CLAUDE.md 已保存到 `{claude_path.absolute()}`")
+            autosave()
+
+    # === 步骤D：grill-me 需求对齐循环 ===
     if st.session_state.get("prd_draft"):
         st.subheader("🔥 需求对齐（grill-me）")
         st.caption(f"已对齐 {st.session_state.grill_rounds} 轮 | 建议 2-3 轮后确认最终 PRD")
@@ -715,23 +758,14 @@ elif st.session_state.phase == "modeling":
                     st.session_state.completed_stages.append("需求对齐")
 
         with col_confirm:
-            if st.button("✅ PRD 已对齐，生成最终版 + CLAUDE.md", key="confirm_prd"):
-                workspace = Path("workspace") / st.session_state.session_id
-                workspace.mkdir(parents=True, exist_ok=True)
+            if st.button("✅ PRD 已对齐，确认最终版", key="confirm_prd"):
+                workspace_dir = Path(__file__).resolve().parent.parent / "workspace"
+                workspace_dir.mkdir(parents=True, exist_ok=True)
 
                 st.session_state.prd_final = st.session_state.prd_draft
-                claude_md_path = generate_claude_md(
-                    prd           = st.session_state.prd_final,
-                    modeling_plan = st.session_state.modeling_plan,
-                    workspace_path= workspace,
-                    session_id    = st.session_state.session_id,
-                )
-                qm = st.session_state.quota_monitor
-                qm.record("CLAUDE.md生成", 500)
-                autosave()
-
-                st.success(f"✅ CLAUDE.md 已生成：`{claude_md_path}`")
-                st.code(f"cd {workspace.absolute()}\nopencode\n# 或\nclaude", language="bash")
+                (workspace_dir / "PRD.md").write_text(st.session_state.prd_final, encoding="utf-8")
+                st.success(f"✅ PRD 已确认并保存到 `{workspace_dir.absolute() / 'PRD.md'}`")
+                qm.record("PRD确认", 200)
 
                 if not st.session_state.reference_loaded:
                     from rag import RAG
