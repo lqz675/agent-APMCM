@@ -36,7 +36,8 @@ from app.memory_logger import MemoryLogger
 from app.utils import load_tabular_file, list_data_files
 from app.session_persistence import (
     save_session, load_session, list_sessions,
-    copy_uploaded_file, get_upload_dir, get_session_id_from_url
+    copy_uploaded_file, get_upload_dir, get_session_id_from_url,
+    save_latest_session_id, get_latest_session_id
 )
 from app.context_restorer import (
     rebuild_rag_from_session, build_context_summary, needs_rag_rebuild
@@ -76,15 +77,59 @@ if "paper_draft" not in st.session_state:
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
-if "session_id" not in st.session_state:
-    url_session_id = get_session_id_from_url(dict(st.query_params))
-    if url_session_id:
-        st.session_state.session_id = url_session_id
-    else:
-        st.session_state.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+if "_init_done" not in st.session_state:
+    st.session_state._init_done = True
+
+    if "session_id" not in st.session_state:
+        recovered_id = (
+            get_session_id_from_url(dict(st.query_params))
+            or get_latest_session_id()
+        )
+        if recovered_id:
+            st.session_state.session_id = recovered_id
+        else:
+            st.session_state.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    try:
         st.query_params["session"] = st.session_state.session_id
-if st.query_params.get("session") != st.session_state.session_id:
-    st.query_params["session"] = st.session_state.session_id
+    except Exception:
+        pass
+    save_latest_session_id(st.session_state.session_id)
+
+    saved = load_session(st.session_state.session_id)
+    if saved:
+        for k, v in saved.items():
+            if k not in ("_init_done",):
+                st.session_state[k] = v
+        st.session_state.state_restored = True
+    else:
+        st.session_state.state_restored = False
+
+for k, v in {
+    "uploaded_file_paths": [],
+    "rag_rebuilt": False,
+    "context_summary": "",
+}.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
+
+# ══ DEBUG PANEL ══
+with st.sidebar:
+    with st.expander("🔍 DEBUG", expanded=False):
+        import json as _json
+        sid = st.session_state.get("session_id", "?")
+        st.write(f"session_id: `{sid}`")
+        st.write(f"state_restored: `{st.session_state.get('state_restored')}`")
+        st.write(f"rag_rebuilt: `{st.session_state.get('rag_rebuilt')}`")
+        json_path = Path(__file__).resolve().parent.parent / "workspace" / sid / "session_state.json"
+        st.write(f"json存在: `{json_path.exists()}`")
+        if json_path.exists():
+            d = _json.loads(json_path.read_text(encoding="utf-8"))
+            st.write(f"phase: `{d.get('phase')}`")
+            st.write(f"chat_history: {len(d.get('chat_history', []))} 条")
+            st.write(f"uploaded_file_paths: {len(d.get('uploaded_file_paths', []))} 个")
+        up_dir = Path(__file__).resolve().parent.parent / "workspace" / sid / "uploads"
+        st.write(f"uploads目录: `{up_dir.exists()}` 文件数: {len(list(up_dir.iterdir())) if up_dir.exists() else 0}")
 
 if "quota_monitor" not in st.session_state:
     st.session_state.quota_monitor = QuotaMonitor(platform="Claude Sonnet")
@@ -113,22 +158,6 @@ if "inbox_last_scan" not in st.session_state:
 if "loaded_data_files" not in st.session_state:
     st.session_state.loaded_data_files = {}
 
-if "state_restored" not in st.session_state:
-    st.session_state.state_restored = False
-    saved = load_session(st.session_state.session_id)
-    if saved:
-        for k, v in saved.items():
-            if k not in st.session_state and k not in ("rag", "logger", "memory_logger", "quota_monitor"):
-                st.session_state[k] = v
-        st.session_state.state_restored = True
-
-if "uploaded_file_paths" not in st.session_state:
-    st.session_state.uploaded_file_paths = []
-if "rag_rebuilt" not in st.session_state:
-    st.session_state.rag_rebuilt = False
-if "context_summary" not in st.session_state:
-    st.session_state.context_summary = ""
-
 if st.session_state.memory_logger is None:
     st.session_state.memory_logger = MemoryLogger(st.session_state.session_id)
 
@@ -138,7 +167,10 @@ logger = st.session_state.logger
 rag = st.session_state.rag
 
 def autosave():
-    save_session(st.session_state.session_id, dict(st.session_state))
+    """保存当前 session 状态到磁盘（带错误保护）"""
+    ok = save_session(st.session_state.session_id, dict(st.session_state))
+    save_latest_session_id(st.session_state.session_id)
+    return ok
 
 if (st.session_state.state_restored
         and not st.session_state.rag_rebuilt
@@ -171,10 +203,26 @@ with st.sidebar:
             for s in sessions[:5]:
                 label = f"[{s['phase']}] {s['session_id']} · {s['saved_at'][:16]}"
                 if st.button(label, key=f"restore_{s['session_id']}"):
-                    st.query_params["session"] = s["session_id"]
-                    for key in list(st.session_state.keys()):
-                        del st.session_state[key]
-                    st.rerun()
+                    target_id = s["session_id"]
+                    saved = load_session(target_id)
+                    if saved:
+                        keys_to_clear = [k for k in st.session_state.keys() if k != "_init_done"]
+                        for key in keys_to_clear:
+                            del st.session_state[key]
+                        for k, v in saved.items():
+                            st.session_state[k] = v
+                        st.session_state.session_id = target_id
+                        st.session_state.state_restored = True
+                        st.session_state.rag_rebuilt = False
+                        st.session_state.context_summary = ""
+                        save_latest_session_id(target_id)
+                        try:
+                            st.query_params["session"] = target_id
+                        except Exception:
+                            pass
+                        st.rerun()
+                    else:
+                        st.error(f"无法加载会话 {target_id}，session_state.json 不存在")
         else:
             st.caption("（暂无历史会话）")
         st.divider()
@@ -368,6 +416,16 @@ st.caption("基于 RAG + LLM + 多Skill 协作的数学建模助手")
 # ============ Phase 1: Input ============
 if st.session_state.phase == "input":
     st.header("📝 上传赛题 PDF")
+
+    restored_paths = st.session_state.get("uploaded_file_paths", [])
+    if restored_paths and st.session_state.get("state_restored"):
+        st.info("✅ 已从上次进度恢复，以下文件已加载：")
+        for p in restored_paths:
+            pp = Path(p)
+            fname = pp.name
+            fsize = pp.stat().st_size / 1024 if pp.exists() else 0
+            st.text(f"  📄 {fname}  ({fsize:.0f} KB)")
+        st.divider()
 
     def _extract_pdf(file_bytes):
         from pypdf import PdfReader

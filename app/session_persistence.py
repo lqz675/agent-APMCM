@@ -5,6 +5,7 @@ from datetime import datetime
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 WORKSPACE_ROOT = PROJECT_ROOT / "workspace"
+LATEST_SESSION_FILE = WORKSPACE_ROOT / ".latest_session"
 
 PERSISTENT_FIELDS = [
     "phase",
@@ -12,6 +13,7 @@ PERSISTENT_FIELDS = [
     "chat_history",
     "selected_topic",
     "topics_text",
+    "topics",
     "modeling_plan",
     "prd_draft",
     "prd_final",
@@ -31,60 +33,66 @@ PERSISTENT_FIELDS = [
 
 
 def save_session(session_id, state):
-    """从 state 中提取持久化字段，原子写入 workspace/{session_id}/session_state.json。
+    """保存 session 状态到磁盘，返回是否成功。
 
     Args:
         session_id (str): 会话 ID
-        state (dict): 当前的 session_state 或部分状态字典
-    """
-    session_dir = WORKSPACE_ROOT / session_id
-    session_dir.mkdir(parents=True, exist_ok=True)
+        state (dict): 当前的 session_state
 
-    snapshot = {}
-    for key in PERSISTENT_FIELDS:
-        val = state.get(key)
-        if val is None:
-            continue
-        try:
-            json.dumps(val, ensure_ascii=False)
-            snapshot[key] = val
-        except (TypeError, ValueError):
+    Returns:
+        bool: 写入成功返回 True
+    """
+    try:
+        session_dir = WORKSPACE_ROOT / session_id
+        session_dir.mkdir(parents=True, exist_ok=True)
+        json_path = session_dir / "session_state.json"
+        tmp_path = session_dir / "session_state.json.tmp"
+
+        to_save = {"saved_at": datetime.now().isoformat()}
+        for field in PERSISTENT_FIELDS:
+            val = state.get(field)
+            if val is None:
+                continue
             try:
-                snapshot[key] = str(val)
-            except Exception:
+                json.dumps(val, ensure_ascii=False)
+                to_save[field] = val
+            except (TypeError, ValueError):
                 pass
 
-    snapshot["saved_at"] = datetime.now().isoformat()
-
-    tmp_path = session_dir / "session_state.json.tmp"
-    target_path = session_dir / "session_state.json"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(snapshot, f, ensure_ascii=False, indent=2)
-    tmp_path.replace(target_path)
+        tmp_path.write_text(
+            json.dumps(to_save, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        tmp_path.replace(json_path)
+        return True
+    except Exception as e:
+        import traceback
+        print(f"[session_persistence] save_session 失败: {e}")
+        traceback.print_exc()
+        return False
 
 
 def load_session(session_id):
-    """从 workspace/{session_id}/session_state.json 读取已保存状态。
+    """从磁盘加载 session 状态，失败时返回 None。
 
     Args:
         session_id (str): 会话 ID
 
     Returns:
-        dict | None: 恢复的状态字典，若不存在或解析失败返回 None
+        dict | None: 恢复的状态字典
     """
-    file_path = WORKSPACE_ROOT / session_id / "session_state.json"
-    if not file_path.exists():
-        return None
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        result = {}
-        for key in PERSISTENT_FIELDS:
-            if key in data:
-                result[key] = data[key]
-        result["saved_at"] = data.get("saved_at", "")
-        return result
-    except (json.JSONDecodeError, OSError):
+        json_path = WORKSPACE_ROOT / session_id / "session_state.json"
+        if not json_path.exists():
+            print(f"[session_persistence] load_session: 文件不存在 {json_path}")
+            return None
+        text = json_path.read_text(encoding="utf-8")
+        data = json.loads(text)
+        print(f"[session_persistence] load_session 成功: phase={data.get('phase')}, "
+              f"chat_history={len(data.get('chat_history', []))} 条")
+        return data
+    except Exception as e:
+        print(f"[session_persistence] load_session 失败: {e}")
         return None
 
 
@@ -105,8 +113,7 @@ def list_sessions():
         if not state_file.exists():
             continue
         try:
-            with open(state_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            data = json.loads(state_file.read_text(encoding="utf-8"))
             upload_dir = d / "uploads"
             upload_count = len(list(upload_dir.glob("*"))) if upload_dir.exists() else 0
             sessions.append({
@@ -174,3 +181,32 @@ def get_session_id_from_url(query_params):
     if isinstance(sid, list):
         sid = sid[0] if sid else ""
     return sid if sid else None
+
+
+def save_latest_session_id(session_id):
+    """把最近使用的 session_id 写入 workspace/.latest_session 文件。
+
+    Args:
+        session_id (str): 会话 ID
+    """
+    try:
+        WORKSPACE_ROOT.mkdir(parents=True, exist_ok=True)
+        LATEST_SESSION_FILE.write_text(session_id, encoding="utf-8")
+    except Exception as e:
+        print(f"[session_persistence] save_latest_session_id 失败: {e}")
+
+
+def get_latest_session_id():
+    """从 workspace/.latest_session 读取最近的 session_id。
+
+    Returns:
+        str | None: session_id 或 None
+    """
+    try:
+        if LATEST_SESSION_FILE.exists():
+            sid = LATEST_SESSION_FILE.read_text(encoding="utf-8").strip()
+            if sid and (WORKSPACE_ROOT / sid / "session_state.json").exists():
+                return sid
+    except Exception as e:
+        print(f"[session_persistence] get_latest_session_id 失败: {e}")
+    return None
