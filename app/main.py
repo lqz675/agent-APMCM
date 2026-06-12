@@ -166,6 +166,20 @@ ensure_inbox_dirs()
 logger = st.session_state.logger
 rag = st.session_state.rag
 
+PHASE_DOWNSTREAM = {
+    "input":        ["topic_sims","topic_scores","topic_recommendation","modeling_plan","coding_result","paper_draft","pressure_report","prd_draft","prd_final","figure_descriptions","polished_paper","paper_sections","selected_topic","selected_topic_idx","selected_sims","completed_stages","grill_rounds","pressure_test_result","grill_result"],
+    "topic_selection":["modeling_plan","coding_result","paper_draft","pressure_report","prd_draft","prd_final","figure_descriptions","polished_paper","paper_sections","selected_topic","selected_topic_idx","selected_sims","completed_stages","grill_rounds","pressure_test_result","grill_result"],
+    "modeling":      ["pressure_report","prd_draft","prd_final","coding_result","paper_draft","figure_descriptions","polished_paper","paper_sections","grill_result"],
+    "coding":        ["paper_draft","figure_descriptions","polished_paper","paper_sections"],
+    "figure":        ["paper_draft","polished_paper"],
+    "paper":         ["polished_paper"],
+}
+
+def clear_downstream(phase):
+    """回到某阶段时，清除该阶段及之后所有下游结果"""
+    for key in PHASE_DOWNSTREAM.get(phase, []):
+        st.session_state.pop(key, None)
+
 def autosave():
     """保存当前 session 状态到磁盘（带错误保护）"""
     ok = save_session(st.session_state.session_id, dict(st.session_state))
@@ -525,6 +539,7 @@ elif st.session_state.phase == "topic_selection":
     st.header("📊 选题分析")
 
     if st.button("⬅️ 返回上传赛题", key="back_to_input"):
+        clear_downstream("input")
         st.session_state.phase = "input"
         st.session_state.memory_logger.new_stage("input")
         st.session_state.memory_logger.log_system_event("返回阶段: input", "用户从选题分析返回")
@@ -586,6 +601,7 @@ elif st.session_state.phase == "modeling":
     st.header("🔬 数学建模方案")
 
     if st.button("⬅️ 返回选题分析", key="back_to_topic"):
+        clear_downstream("topic_selection")
         st.session_state.phase = "topic_selection"
         st.session_state.memory_logger.new_stage("topic_selection")
         st.session_state.memory_logger.log_system_event("返回阶段: topic_selection")
@@ -714,6 +730,7 @@ elif st.session_state.phase == "modeling":
     col1, col2, col3 = st.columns(3)
     with col1:
         if st.button("🔄 重新生成方案"):
+            clear_downstream("modeling")
             if user_approach:
                 st.session_state.user_approach = user_approach
             del st.session_state.modeling_plan
@@ -759,6 +776,7 @@ elif st.session_state.phase == "pressure_test":
     col1, col2 = st.columns(2)
     with col1:
         if st.button("🔄 返回修改方案"):
+            clear_downstream("modeling")
             st.session_state.phase = "modeling"
             st.session_state.memory_logger.new_stage(st.session_state.phase)
             st.session_state.memory_logger.log_system_event(
@@ -803,6 +821,7 @@ elif st.session_state.phase == "grill_me":
         col1, col2 = st.columns(2)
         with col1:
             if st.button("🔄 返回调整方案"):
+                clear_downstream("modeling")
                 st.session_state.phase = "modeling"
                 st.session_state.memory_logger.new_stage(st.session_state.phase)
                 st.session_state.memory_logger.log_system_event(
@@ -827,6 +846,7 @@ elif st.session_state.phase == "coding":
     st.header("💻 代码生成")
 
     if st.button("⬅️ 返回建模方案", key="back_to_modeling"):
+        clear_downstream("modeling")
         st.session_state.phase = "modeling"
         st.session_state.memory_logger.new_stage("modeling")
         autosave()
@@ -992,6 +1012,7 @@ python model_solution.py
     col1, col2, col3 = st.columns(3)
     with col1:
         if st.button("🔄 重新生成代码"):
+            clear_downstream("coding")
             del st.session_state.coding_result
             st.rerun()
     with col2:
@@ -1020,6 +1041,7 @@ elif st.session_state.phase == "figure":
     st.header("📊 图表生成方案")
 
     if st.button("⬅️ 返回代码生成", key="back_to_coding"):
+        clear_downstream("coding")
         st.session_state.phase = "coding"
         st.session_state.memory_logger.new_stage("coding")
         autosave()
@@ -1048,6 +1070,7 @@ elif st.session_state.phase == "figure":
     col1, col2 = st.columns(2)
     with col1:
         if st.button("🔄 重新生成图表方案"):
+            clear_downstream("figure")
             del st.session_state.figure_descriptions
             st.rerun()
     with col2:
@@ -1066,6 +1089,7 @@ elif st.session_state.phase == "paper":
     st.header("📝 论文初稿")
 
     if st.button("⬅️ 返回图表方案", key="back_to_figure"):
+        clear_downstream("figure")
         st.session_state.phase = "figure"
         st.session_state.memory_logger.new_stage("figure")
         autosave()
@@ -1089,6 +1113,7 @@ elif st.session_state.phase == "paper":
     col1, col2, col3 = st.columns(3)
     with col1:
         if st.button("🔄 重新生成论文"):
+            clear_downstream("paper")
             del st.session_state.paper_draft
             st.rerun()
     with col2:
@@ -1117,6 +1142,7 @@ elif st.session_state.phase == "polish":
     st.header("✨ 论文润色")
 
     if st.button("⬅️ 返回论文初稿", key="back_to_paper"):
+        clear_downstream("paper")
         st.session_state.phase = "paper"
         st.session_state.memory_logger.new_stage("paper")
         autosave()
