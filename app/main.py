@@ -2,6 +2,7 @@ import streamlit as st
 import os
 import sys
 import io
+import shutil
 from pathlib import Path
 from datetime import datetime
 
@@ -184,7 +185,6 @@ PHASE_FILES = {
 
 def rubbish_downstream(phase):
     """归档下游结果：移入 workspace/rubbish/{phase}_{timestamp}/，并清除 session_state"""
-    import shutil
     from datetime import datetime
     rb = Path(__file__).resolve().parent.parent / "workspace" / "rubbish"
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -340,7 +340,7 @@ with st.sidebar:
     # 额度预警
     should_alert, threshold = qm.should_alert()
     if should_alert:
-        workspace = Path("workspace") / st.session_state.get("session_id", "default")
+        workspace = Path(__file__).resolve().parent.parent / "workspace" / st.session_state.get("session_id", "default")
         handoff   = qm.generate_handoff_doc(
             session_id     = st.session_state.get("session_id", "default"),
             current_stage  = st.session_state.get("phase", "未知"),
@@ -369,12 +369,12 @@ with st.sidebar:
                 new_badge = f"  🆕 {info['new']} 个新文件" if info["new"] > 0 else ""
                 st.write(f"**{label}**: {info['total']} 个文件{new_badge}")
             total_loaded = 0
-            rag = st.session_state.get("rag")
-            if rag:
+            _rag = st.session_state.get("rag")
+            if _rag:
                 for sub in ["problems","papers","references","knowledge"]:
                     new_files = get_new_files(sub)
                     if new_files:
-                        n = rag.add_inbox_files(sub, new_files)
+                        n = _rag.add_inbox_files(sub, new_files)
                         mark_as_processed(new_files)
                         total_loaded += n
                 if total_loaded > 0:
@@ -891,7 +891,7 @@ workspace/
 
                 if not st.session_state.reference_loaded:
                     from rag import RAG
-                    if hasattr(st.session_state, "rag") and st.session_state.rag.load_references():
+                    if "rag" in st.session_state and st.session_state.rag.load_references():
                         st.info("📚 reference/ 知识库已加载")
                         st.session_state.reference_loaded = True
 
@@ -939,7 +939,7 @@ workspace/
             # 保存外部参考上下文供下次生成使用
             if extra_context:
                 st.session_state._modeling_refs = extra_context
-            del st.session_state.modeling_plan
+            st.session_state.pop("modeling_plan", None)
             st.rerun()
     with col2:
         if st.button("🧪 压力测试", type="primary"):
@@ -1105,11 +1105,7 @@ elif st.session_state.phase == "coding":
     if data_dir.exists():
         for df in data_dir.glob("*"):
             if df.suffix.lower() in (".csv", ".xlsx", ".xls"):
-                import shutil
-                try:
-                    shutil.copy2(str(df), str(prepare_dir / df.name))
-                except Exception:
-                    pass
+                shutil.copy2(str(df), str(prepare_dir / df.name))
 
     # 展示给用户
     st.subheader(f"📁 选题 {n} 的准备工作")
@@ -1229,15 +1225,8 @@ elif st.session_state.phase == "coding":
         with col_redo:
             if st.button("🔄 重新生成", key="coding_redo"):
                 rubbish_downstream("coding")
-                st.session_state.coding_result = None
+                st.session_state.pop("coding_result", None)
                 st.rerun()
-
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        if st.button("🔄 重新生成代码"):
-            rubbish_downstream("coding")
-            del st.session_state.coding_result
-            st.rerun()
 
 # ============ Phase 7: Figure ============
 elif st.session_state.phase == "figure":
@@ -1285,7 +1274,7 @@ elif st.session_state.phase == "figure":
     with col1:
         if st.button("🔄 重新生成图表方案"):
             rubbish_downstream("figure")
-            del st.session_state.figure_descriptions
+            st.session_state.pop("figure_descriptions", None)
             st.rerun()
     with col2:
         if st.button("📝 生成论文初稿", type="primary"):
@@ -1320,7 +1309,7 @@ elif st.session_state.phase == "paper":
         st.rerun()
 
     # 汇总各阶段论文节
-    section_files = list((writing_dir).glob("sec_*.md")) if writing_dir.exists() else []
+    section_files = list((writing_dir).glob("*.md")) if writing_dir.exists() else []
     st.caption(f"已有 {len(section_files)} 节论文初稿在 `{writing_dir.absolute()}`")
     if section_files:
         for f in sorted(section_files):
@@ -1358,7 +1347,7 @@ elif st.session_state.phase == "paper":
     with col1:
         if st.button("🔄 重新生成论文"):
             rubbish_downstream("paper")
-            del st.session_state.paper_draft
+            st.session_state.pop("paper_draft", None)
             st.rerun()
     with col2:
         if st.button("✨ 润色论文", type="primary"):
@@ -1417,7 +1406,7 @@ elif st.session_state.phase == "polish":
         col1, col2 = st.columns(2)
         with col1:
             if st.button("🔄 重新润色"):
-                del st.session_state.polished_paper
+                st.session_state.pop("polished_paper", None)
                 st.rerun()
         with col2:
             if st.button("📥 完成,查看总结", type="primary"):
@@ -1490,7 +1479,7 @@ elif st.session_state.phase == "polish":
                     "polished_paper",
                     st.session_state.get("paper_draft", "")
                 )
-                workspace = Path("workspace") / st.session_state.session_id
+                workspace = Path(__file__).resolve().parent.parent / "workspace" / st.session_state.session_id
                 workspace.mkdir(parents=True, exist_ok=True)
                 paper_path = workspace / "paper.md"
                 paper_path.write_text(paper_text, encoding="utf-8")
