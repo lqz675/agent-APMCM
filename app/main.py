@@ -1213,68 +1213,77 @@ with work_col:
             st.rerun()
 
 # ═══════════════════════════════════════════════════════════
-# 右侧面板：对话区 + 会话管理
+# 右侧面板：对话区 + 会话管理（可折叠）
 # ═══════════════════════════════════════════════════════════
+if "chat_panel_open" not in st.session_state:
+    st.session_state.chat_panel_open = True
+
 with chat_col:
-    with st.expander("💾 会话管理", expanded=False):
-        st.caption(f"当前: `{st.session_state.session_id}`")
-        st.caption(f"阶段: **{st.session_state.get('phase', 'input')}**")
-        if st.session_state.get("state_restored"):
-            st.success("✅ 已从磁盘恢复")
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("💾 保存", key="btn_save"):
-                autosave()
-                st.toast("已保存")
-        with c2:
-            if st.button("🆕 新对话", key="btn_new_chat"):
-                st.session_state.chat_history = []
-                st.session_state.context_summary = ""
-                autosave()
-                st.rerun()
+    show = st.toggle("💬 对话面板", value=st.session_state.chat_panel_open, key="chat_toggle")
+    st.session_state.chat_panel_open = show
+
+    if not show:
+        st.caption("👆 点击开关打开对话面板")
+    else:
+        with st.expander("💾 会话管理", expanded=False):
+            st.caption(f"当前: `{st.session_state.session_id}`")
+            st.caption(f"阶段: **{st.session_state.get('phase', 'input')}**")
+            if st.session_state.get("state_restored"):
+                st.success("✅ 已从磁盘恢复")
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("💾 保存", key="btn_save"):
+                    autosave()
+                    st.toast("已保存")
+            with c2:
+                if st.button("🆕 新对话", key="btn_new_chat"):
+                    st.session_state.chat_history = []
+                    st.session_state.context_summary = ""
+                    autosave()
+                    st.rerun()
+            st.divider()
+            st.caption("历史会话（点击恢复）：")
+            sessions = list_sessions()
+            if sessions:
+                for s in sessions[:5]:
+                    label = f"[{s['phase']}] {s['session_id']}"
+                    if st.button(label, key=f"r_{s['session_id']}"):
+                        target_id = s["session_id"]
+                        saved = load_session(target_id)
+                        if saved:
+                            keys = [k for k in st.session_state.keys() if k != "_init_done"]
+                            for k in keys:
+                                del st.session_state[k]
+                            for k, v in saved.items():
+                                st.session_state[k] = v
+                            st.session_state.session_id = target_id
+                            st.session_state.state_restored = True
+                            st.session_state.rag_rebuilt = False
+                            st.session_state.context_summary = ""
+                            save_latest_session_id(target_id)
+                            try:
+                                st.query_params["session"] = target_id
+                            except Exception:
+                                pass
+                            st.rerun()
+                        else:
+                            st.error(f"无法加载 {target_id}")
+            else:
+                st.caption("（暂无）")
+
         st.divider()
-        st.caption("历史会话（点击恢复）：")
-        sessions = list_sessions()
-        if sessions:
-            for s in sessions[:5]:
-                label = f"[{s['phase']}] {s['session_id']}"
-                if st.button(label, key=f"r_{s['session_id']}"):
-                    target_id = s["session_id"]
-                    saved = load_session(target_id)
-                    if saved:
-                        keys = [k for k in st.session_state.keys() if k != "_init_done"]
-                        for k in keys:
-                            del st.session_state[k]
-                        for k, v in saved.items():
-                            st.session_state[k] = v
-                        st.session_state.session_id = target_id
-                        st.session_state.state_restored = True
-                        st.session_state.rag_rebuilt = False
-                        st.session_state.context_summary = ""
-                        save_latest_session_id(target_id)
-                        try:
-                            st.query_params["session"] = target_id
-                        except Exception:
-                            pass
-                        st.rerun()
-                    else:
-                        st.error(f"无法加载 {target_id}")
-        else:
-            st.caption("（暂无）")
+        chat_count = len(st.session_state.get("chat_history", []))
+        st.caption(f"💬 对话记录 · {chat_count} 条消息")
 
-    st.divider()
-    chat_count = len(st.session_state.get("chat_history", []))
-    st.caption(f"💬 对话记录 · {chat_count} 条消息")
-
-    chat_container = st.container(height=380, border=True)
-    with chat_container:
-        if st.session_state.get("chat_history"):
-            for msg in st.session_state.chat_history:
-                role_label = "🧑 你" if msg["role"] == "user" else "🤖 Agent"
-                with st.chat_message(msg["role"]):
-                    st.markdown(f"**{role_label}** — {msg['content'][:2000]}")
-        else:
-            st.caption("对话记录在此显示。上传赛题后即可与 Agent 交流。")
+        chat_container = st.container(height=380, border=True)
+        with chat_container:
+            if st.session_state.get("chat_history"):
+                for msg in st.session_state.chat_history:
+                    role_label = "🧑 你" if msg["role"] == "user" else "🤖 Agent"
+                    with st.chat_message(msg["role"]):
+                        st.markdown(f"**{role_label}** — {msg['content'][:2000]}")
+            else:
+                st.caption("对话记录在此显示。上传赛题后即可与 Agent 交流。")
 
 # ═══════════════════════════════════════════════════════════
 # 底部对话输入（全宽）
