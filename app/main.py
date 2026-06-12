@@ -363,10 +363,18 @@ PRD摘要：{(st.session_state.get('prd_final') or st.session_state.get('prd_dra
 st.title("🎓 APMCM 数学建模比赛 Agent")
 st.caption("基于 RAG + LLM + 多Skill 协作的数学建模助手")
 
-# 三栏布局：中间操作区 | 分隔线 | 右侧对话栏
-work_col, sep_col, chat_col = st.columns([5, 0.05, 2])
-with sep_col:
-    st.markdown('<div style="border-left:2px solid #555;height:70vh;margin-top:20px"></div>', unsafe_allow_html=True)
+st.markdown("""
+<style>
+[data-testid="stHorizontalBlock"] > div:last-child {
+    position: sticky; top: 3.5rem;
+    height: calc(100vh - 3.5rem); overflow-y: auto;
+    background: #0e1117; border-left: 1px solid #444;
+    padding-left: 12px !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+work_col, chat_col = st.columns([3, 1])
 
 with work_col:
 
