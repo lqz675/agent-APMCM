@@ -33,7 +33,14 @@ from app.webai_bridge import (
     export_context_package, import_webai_response, list_export_files
 )
 from app.memory_logger import MemoryLogger
-from app.utils import load_tabular_file, list_data_files, save_session_snapshot, load_session_snapshot, list_saved_sessions, build_context_from_workspace
+from app.utils import load_tabular_file, list_data_files
+from app.session_persistence import (
+    save_session, load_session, list_sessions,
+    copy_uploaded_file, get_upload_dir, get_session_id_from_url
+)
+from app.context_restorer import (
+    rebuild_rag_from_session, build_context_summary, needs_rag_rebuild
+)
 
 st.set_page_config(page_title="APMCM 数学建模 Agent", page_icon="🎓", layout="wide")
 
@@ -68,15 +75,17 @@ if "paper_draft" not in st.session_state:
     st.session_state.paper_draft = None
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
+
 if "session_id" not in st.session_state:
-    from pathlib import Path as _Path
-    _cur = _Path(__file__).resolve().parent.parent / "memory" / ".current_session"
-    if _cur.exists():
-        st.session_state.session_id = _cur.read_text(encoding="utf-8").strip()
+    url_session_id = get_session_id_from_url(dict(st.query_params))
+    if url_session_id:
+        st.session_state.session_id = url_session_id
     else:
         st.session_state.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-        _cur.parent.mkdir(parents=True, exist_ok=True)
-        _cur.write_text(st.session_state.session_id, encoding="utf-8")
+        st.query_params["session"] = st.session_state.session_id
+if st.query_params.get("session") != st.session_state.session_id:
+    st.query_params["session"] = st.session_state.session_id
+
 if "quota_monitor" not in st.session_state:
     st.session_state.quota_monitor = QuotaMonitor(platform="Claude Sonnet")
 if "completed_stages" not in st.session_state:
@@ -90,7 +99,7 @@ if "grill_rounds" not in st.session_state:
 if "pressure_report" not in st.session_state:
     st.session_state.pressure_report = ""
 if "paper_sections" not in st.session_state:
-    st.session_state.paper_sections = {}   # {section_name: content}
+    st.session_state.paper_sections = {}
 if "reference_loaded" not in st.session_state:
     st.session_state.reference_loaded = False
 if "memory_logger" not in st.session_state:
@@ -104,80 +113,83 @@ if "inbox_last_scan" not in st.session_state:
 if "loaded_data_files" not in st.session_state:
     st.session_state.loaded_data_files = {}
 
+if "state_restored" not in st.session_state:
+    st.session_state.state_restored = False
+    saved = load_session(st.session_state.session_id)
+    if saved:
+        for k, v in saved.items():
+            if k not in st.session_state and k not in ("rag", "logger", "memory_logger", "quota_monitor"):
+                st.session_state[k] = v
+        st.session_state.state_restored = True
+
+if "uploaded_file_paths" not in st.session_state:
+    st.session_state.uploaded_file_paths = []
+if "rag_rebuilt" not in st.session_state:
+    st.session_state.rag_rebuilt = False
+if "context_summary" not in st.session_state:
+    st.session_state.context_summary = ""
+
 if st.session_state.memory_logger is None:
     st.session_state.memory_logger = MemoryLogger(st.session_state.session_id)
 
 ensure_inbox_dirs()
 
-# ── 会话持久化：自动保存 & 断点恢复 ──
-if "session_saved" not in st.session_state:
-    st.session_state.session_saved = False
-
-# 尝试从磁盘恢复上次会话（仅在还在input阶段且未恢复过时）
-if "session_restored" not in st.session_state and st.session_state.phase == "input":
-    st.session_state.session_restored = False
-    try:
-        snapshot = load_session_snapshot(st.session_state.session_id)
-        if snapshot and snapshot.get("phase", "input") != "input":
-            for k, v in snapshot.items():
-                if k not in ("rag", "logger", "memory_logger", "quota_monitor", "session_id"):
-                    st.session_state[k] = v
-            st.session_state.memory_logger = MemoryLogger(st.session_state.session_id)
-            st.session_state.memory_logger.new_stage(st.session_state.phase)
-            st.session_state.memory_logger.log_system_event(
-                "会话恢复", f"从 snapshot 恢复，阶段: {st.session_state.phase}"
-            )
-            # 从 workspace 重建上下文
-            restored = build_context_from_workspace(st.session_state)
-            for msg in restored:
-                st.session_state.memory_logger.log_system_event("上下文重建", msg)
-            # 恢复已上传的赛题文件
-            upload_dir = Path(__file__).resolve().parent.parent / "memory" / st.session_state.session_id / "uploads"
-            for i in range(1, 4):
-                tf = upload_dir / f"topic_{i}.txt"
-                nf = upload_dir / f"topic_{i}_name.txt"
-                if tf.exists():
-                    st.session_state[f"extracted_{i-1}"] = tf.read_text(encoding="utf-8")
-                if nf.exists():
-                    st.session_state[f"uploaded_name_{i-1}"] = nf.read_text(encoding="utf-8")
-            st.session_state.session_restored = True
-    except Exception:
-        pass
-
-
-def _auto_save():
-    """每次关键状态变更后调用，序列化到磁盘"""
-    try:
-        save_session_snapshot(
-            st.session_state.session_id,
-            {k: st.session_state.get(k) for k in [
-                "phase", "topics", "selected_topic", "selected_topic_idx", "selected_sims",
-                "modeling_plan", "pressure_report", "prd_draft", "prd_final",
-                "grill_rounds", "coding_result", "figure_descriptions",
-                "paper_draft", "polished_paper", "paper_sections",
-                "completed_stages", "reference_loaded", "chat_history",
-                "topic_recommendation", "topic_sims", "topic_scores",
-                "loaded_data_files",
-            ]}
-        )
-        st.session_state.session_saved = True
-    except Exception:
-        pass
-
-
 logger = st.session_state.logger
 rag = st.session_state.rag
 
+def autosave():
+    save_session(st.session_state.session_id, dict(st.session_state))
+
+if (st.session_state.state_restored
+        and not st.session_state.rag_rebuilt
+        and needs_rag_rebuild(st.session_state.get("rag"))):
+    with st.spinner("🔄 检测到重启，正在重新扫描文件恢复上下文..."):
+        report = rebuild_rag_from_session(
+            st.session_state.session_id,
+            st.session_state.rag
+        )
+        st.session_state.rag_rebuilt = True
+        st.session_state.context_summary = build_context_summary(dict(st.session_state))
+        if report["total"] > 0:
+            st.toast(f"✅ 已恢复 {report['total']} 个文件的知识库索引", icon="📚")
+
 # === 全局侧边栏：进度 + 额度监控 + 提问入口 ===
 with st.sidebar:
-    st.header("📊 项目仪表盘")
+    with st.expander("💾 会话管理", expanded=False):
+        st.caption(f"当前 Session: `{st.session_state.session_id}`")
+        phase_label = st.session_state.get("phase", "input")
+        st.caption(f"当前阶段: **{phase_label}**")
+        if st.session_state.get("state_restored"):
+            st.success("✅ 已从磁盘恢复上次进度")
+        if st.button("💾 立即保存进度", key="btn_manual_save"):
+            save_session(st.session_state.session_id, dict(st.session_state))
+            st.toast("✅ 进度已保存", icon="💾")
+        st.divider()
+        st.caption("历史会话（点击可恢复）：")
+        sessions = list_sessions()
+        if sessions:
+            for s in sessions[:5]:
+                label = f"[{s['phase']}] {s['session_id']} · {s['saved_at'][:16]}"
+                if st.button(label, key=f"restore_{s['session_id']}"):
+                    st.query_params["session"] = s["session_id"]
+                    for key in list(st.session_state.keys()):
+                        del st.session_state[key]
+                    st.rerun()
+        else:
+            st.caption("（暂无历史会话）")
+        st.divider()
+        st.caption("本次已上传文件：")
+        upload_dir = get_upload_dir(st.session_state.session_id)
+        all_files = list(upload_dir.glob("*")) if upload_dir.exists() else []
+        if all_files:
+            for f in all_files:
+                st.text(f"📄 {f.name}")
+        else:
+            st.caption("（暂无）")
 
-    if st.session_state.get("session_saved"):
-        st.caption(f"💾 会话已保存 · Session: {st.session_state.session_id}")
-    if st.session_state.phase != "input" and st.session_state.get("resume_attempted"):
-        saved = list_saved_sessions()
-        if saved and saved[0]["session_id"] == st.session_state.session_id:
-            st.success("✅ 上次会话已自动恢复")
+    st.divider()
+
+    st.header("📊 项目仪表盘")
 
     # 进度追踪
     all_stages = ["选题确认", "建模方法确认", "压力测试", "PRD生成",
@@ -357,22 +369,6 @@ st.caption("基于 RAG + LLM + 多Skill 协作的数学建模助手")
 if st.session_state.phase == "input":
     st.header("📝 上传赛题 PDF")
 
-    # 检查是否有从磁盘恢复的已上传文件
-    upload_dir = Path(__file__).resolve().parent.parent / "memory" / st.session_state.session_id / "uploads"
-    restored_files = []
-    for i in range(1, 4):
-        tf = upload_dir / f"topic_{i}.txt"
-        nf = upload_dir / f"topic_{i}_name.txt"
-        if tf.exists():
-            st.session_state.setdefault(f"extracted_{i-1}", tf.read_text(encoding="utf-8"))
-        if nf.exists():
-            st.session_state.setdefault(f"uploaded_name_{i-1}", nf.read_text(encoding="utf-8"))
-        if st.session_state.get(f"extracted_{i-1}"):
-            restored_files.append((i, st.session_state.get(f"uploaded_name_{i-1}", f"选题{i}")))
-
-    if restored_files:
-        st.info(f"💾 检测到上次会话已上传 {len(restored_files)} 个文件：{', '.join(n for _, n in restored_files)}")
-
     def _extract_pdf(file_bytes):
         from pypdf import PdfReader
         from io import BytesIO
@@ -397,21 +393,20 @@ if st.session_state.phase == "input":
             )
             if uploaded:
                 if f"extracted_{i}" not in st.session_state:
+                    file_bytes = uploaded.read()
                     with st.spinner(f"解析选题{i+1}..."):
-                        st.session_state[f"extracted_{i}"] = _extract_pdf(uploaded.read())
+                        st.session_state[f"extracted_{i}"] = _extract_pdf(file_bytes)
                     st.session_state[f"uploaded_name_{i}"] = uploaded.name
-                    # 保存到磁盘，防止刷新丢失
-                    upload_dir = Path(__file__).resolve().parent.parent / "memory" / st.session_state.session_id / "uploads"
-                    upload_dir.mkdir(parents=True, exist_ok=True)
-                    (upload_dir / f"topic_{i+1}.txt").write_text(st.session_state[f"extracted_{i}"], encoding="utf-8")
-                    (upload_dir / f"topic_{i+1}_name.txt").write_text(uploaded.name, encoding="utf-8")
+                    saved_path = copy_uploaded_file(st.session_state.session_id, file_bytes, uploaded.name)
+                    if str(saved_path) not in st.session_state.uploaded_file_paths:
+                        st.session_state.uploaded_file_paths.append(str(saved_path))
+                    autosave()
                 uploaded_texts[i] = st.session_state[f"extracted_{i}"]
                 uploaded_names[i] = st.session_state[f"uploaded_name_{i}"]
                 st.success(f"已解析: {uploaded.name}")
 
     if st.button("🚀 开始分析", type="primary", use_container_width=True):
         topics = [t for t in uploaded_texts if t]
-        # 如果 file_uploader 没检测到文件但从磁盘恢复了，使用恢复的文件
         if not topics:
             for i in range(3):
                 extracted = st.session_state.get(f"extracted_{i}")
@@ -429,6 +424,7 @@ if st.session_state.phase == "input":
                 "进入阶段: topic_selection",
                 f"session_id={st.session_state.session_id}"
             )
+            autosave()
             st.rerun()
 
 # ============ Phase 2: Topic Selection ============
@@ -482,6 +478,7 @@ elif st.session_state.phase == "topic_selection":
                 "进入阶段: modeling",
                 f"session_id={st.session_state.session_id}"
             )
+            autosave()
             st.rerun()
 
 # ============ Phase 3: Modeling ============
@@ -498,6 +495,7 @@ elif st.session_state.phase == "modeling":
             modeling_plan = gpt_with_retry(prompt, max_tokens=6000)
             st.session_state.modeling_plan = modeling_plan
             logger.log_modeling(modeling_plan)
+            autosave()
 
     st.markdown(st.session_state.modeling_plan)
 
@@ -514,6 +512,7 @@ elif st.session_state.phase == "modeling":
                 qm.record("压力测试", qm.estimate_tokens(report))
                 if "压力测试" not in st.session_state.completed_stages:
                     st.session_state.completed_stages.append("压力测试")
+                autosave()
 
     if st.session_state.get("pressure_report"):
         with st.expander("📋 压力测试报告", expanded=True):
@@ -537,6 +536,7 @@ elif st.session_state.phase == "modeling":
                 export_prd_file(prd, workspace, st.session_state.session_id)
                 if "PRD生成" not in st.session_state.completed_stages:
                     st.session_state.completed_stages.append("PRD生成")
+                autosave()
 
     if st.session_state.get("prd_draft"):
         with st.expander("📄 PRD 当前版本", expanded=True):
@@ -581,11 +581,11 @@ elif st.session_state.phase == "modeling":
                 )
                 qm = st.session_state.quota_monitor
                 qm.record("CLAUDE.md生成", 500)
+                autosave()
 
                 st.success(f"✅ CLAUDE.md 已生成：`{claude_md_path}`")
                 st.code(f"cd {workspace.absolute()}\nopencode\n# 或\nclaude", language="bash")
 
-                # 加载 reference/（选题后第一次到这里才触发）
                 if not st.session_state.reference_loaded:
                     from rag import RAG
                     if hasattr(st.session_state, "rag") and st.session_state.rag.load_references():
@@ -598,6 +598,7 @@ elif st.session_state.phase == "modeling":
                     "进入阶段: coding",
                     f"session_id={st.session_state.session_id}"
                 )
+                autosave()
                 st.rerun()
 
     st.divider()
@@ -619,6 +620,7 @@ elif st.session_state.phase == "modeling":
                 "进入阶段: pressure_test",
                 f"session_id={st.session_state.session_id}"
             )
+            autosave()
             st.rerun()
     with col3:
         if st.button("⏭️ 跳过测试"):
@@ -629,6 +631,7 @@ elif st.session_state.phase == "modeling":
                 "进入阶段: coding",
                 f"session_id={st.session_state.session_id}"
             )
+            autosave()
             st.rerun()
 
 # ============ Phase 4: Pressure Test ============
@@ -655,6 +658,7 @@ elif st.session_state.phase == "pressure_test":
                 "进入阶段: modeling",
                 f"session_id={st.session_state.session_id}"
             )
+            autosave()
             st.rerun()
     with col2:
         if st.button("✅ 方案通过,对齐用户期望", type="primary"):
@@ -664,6 +668,7 @@ elif st.session_state.phase == "pressure_test":
                 "进入阶段: grill_me",
                 f"session_id={st.session_state.session_id}"
             )
+            autosave()
             st.rerun()
 
 # ============ Phase 5: Grill Me ============
@@ -697,6 +702,7 @@ elif st.session_state.phase == "grill_me":
                     "进入阶段: modeling",
                     f"session_id={st.session_state.session_id}"
                 )
+                autosave()
                 st.rerun()
         with col2:
             if st.button("✅ 方案对齐,开始编码", type="primary"):
@@ -706,6 +712,7 @@ elif st.session_state.phase == "grill_me":
                     "进入阶段: coding",
                     f"session_id={st.session_state.session_id}"
                 )
+                autosave()
                 st.rerun()
 
 # ============ Phase 6: Coding ============
@@ -728,6 +735,7 @@ elif st.session_state.phase == "coding":
             coding_result = gpt_with_retry(prompt, max_tokens=8000)
             st.session_state.coding_result = coding_result
             logger.log_coding(coding_result)
+            autosave()
 
     st.code(st.session_state.coding_result, language="python")
 
@@ -741,7 +749,6 @@ elif st.session_state.phase == "coding":
                     qm.record("代码审查", qm.estimate_tokens(review))
                     st.markdown(review)
 
-        # 每完成代码段，同步写论文节
         st.subheader("📝 同步生成对应论文节")
         section_name = st.selectbox("这段代码对应论文哪一节？",
                                      ["3.1 模型建立", "3.2 求解方法", "4.1 结果分析", "4.2 敏感性分析"])
@@ -761,7 +768,6 @@ elif st.session_state.phase == "coding":
                 qm.record(f"论文节-{section_name}", qm.estimate_tokens(section))
                 st.session_state.paper_sections[section_name] = section
 
-                # 同时写到 workspace
                 workspace = Path("workspace") / st.session_state.session_id / "paper_sections"
                 workspace.mkdir(parents=True, exist_ok=True)
                 safe_name = section_name.replace(" ", "_").replace(".", "")
@@ -770,7 +776,6 @@ elif st.session_state.phase == "coding":
             st.markdown(section)
             st.success(f"✅ {section_name} 已保存")
 
-        # 向用户确认当前产出
         st.info("👆 请确认以上代码和论文节是否符合预期，再进入下一阶段")
         col_ok, col_redo = st.columns(2)
         with col_ok:
@@ -783,6 +788,7 @@ elif st.session_state.phase == "coding":
                     "进入阶段: figure",
                     f"session_id={st.session_state.session_id}"
                 )
+                autosave()
                 st.rerun()
         with col_redo:
             if st.button("🔄 重新生成", key="coding_redo"):
@@ -883,6 +889,7 @@ python model_solution.py
                 "进入阶段: figure",
                 f"session_id={st.session_state.session_id}"
             )
+            autosave()
             st.rerun()
     with col3:
         if st.button("⏭️ 跳过图表"):
@@ -892,6 +899,7 @@ python model_solution.py
                 "进入阶段: paper",
                 f"session_id={st.session_state.session_id}"
             )
+            autosave()
             st.rerun()
 
 # ============ Phase 7: Figure ============
@@ -931,6 +939,7 @@ elif st.session_state.phase == "figure":
                 "进入阶段: paper",
                 f"session_id={st.session_state.session_id}"
             )
+            autosave()
             st.rerun()
 
 # ============ Phase 8: Paper ============
@@ -948,6 +957,7 @@ elif st.session_state.phase == "paper":
             paper_draft = gpt_with_retry(prompt, max_tokens=8000)
             st.session_state.paper_draft = paper_draft
             logger.log_paper_draft(paper_draft)
+            autosave()
 
     st.markdown(st.session_state.paper_draft)
 
@@ -964,6 +974,7 @@ elif st.session_state.phase == "paper":
                 "进入阶段: polish",
                 f"session_id={st.session_state.session_id}"
             )
+            autosave()
             st.rerun()
     with col3:
         if st.button("📥 导出完成"):
@@ -973,6 +984,7 @@ elif st.session_state.phase == "paper":
                 "进入阶段: done",
                 f"session_id={st.session_state.session_id}"
             )
+            autosave()
             st.rerun()
 
 # ============ Phase 9: Polish ============
@@ -1005,6 +1017,7 @@ elif st.session_state.phase == "polish":
                     "进入阶段: done",
                     f"session_id={st.session_state.session_id}"
                 )
+                autosave()
                 st.rerun()
 
         # === 论文导出 ===
@@ -1124,6 +1137,7 @@ elif st.session_state.phase == "done":
         st.session_state.rag = rag
         st.session_state.phase = "input"
         st.session_state.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        st.query_params["session"] = st.session_state.session_id
         st.session_state.memory_logger = MemoryLogger(st.session_state.session_id)
         st.session_state.memory_logger.new_stage("input")
         st.session_state.memory_logger.log_system_event(
@@ -1159,18 +1173,26 @@ if chat_input:
 PRD: {(st.session_state.get('prd_final') or st.session_state.get('prd_draft') or '未生成')[:300]}
 代码摘要: {(st.session_state.get('coding_result') or '未生成')[:500]}
 论文摘要: {(st.session_state.get('paper_draft') or '未生成')[:300]}"""
-        messages = [
-            {"role": "system", "content": f"""你是APMCM数学建模Agent助手，全程参与用户的建模竞赛准备。你可以：
+        messages_to_send = []
+        if st.session_state.get("context_summary"):
+            messages_to_send.append({
+                "role": "system",
+                "content": st.session_state.context_summary
+            })
+            st.session_state.context_summary = ""
+        messages_to_send.append({
+            "role": "system",
+            "content": f"""你是APMCM数学建模Agent助手，全程参与用户的建模竞赛准备。你可以：
 - 解释当前阶段的决策逻辑和方法选择理由
 - 回答关于建模方案、代码、论文的任何问题
 - 根据用户反馈调整方向和策略
 请用中文回答，简洁有针对性。
 
-{ctx}"""},
-        ]
+{ctx}""",
+        })
         recent_history = st.session_state.chat_history[-20:]
-        messages.extend(recent_history)
-        response = chat(messages)
+        messages_to_send.extend(recent_history)
+        response = chat(messages_to_send)
     st.session_state.chat_history.append({"role": "assistant", "content": response})
     st.session_state.memory_logger.log_message("assistant", response)
 
@@ -1178,4 +1200,4 @@ for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-_auto_save()
+autosave()
