@@ -648,6 +648,11 @@ elif st.session_state.phase == "modeling":
             autosave()
 
     st.markdown(st.session_state.modeling_plan)
+    if st.button("💾 保存建模方案到 prepare_claude/", key="save_modeling_plan"):
+        prep_dir = Path(__file__).resolve().parent.parent / "workspace" / "prepare_claude"
+        prep_dir.mkdir(parents=True, exist_ok=True)
+        (prep_dir / "建模方案.md").write_text(st.session_state.modeling_plan, encoding="utf-8")
+        st.success(f"已保存到 `{prep_dir.absolute() / '建模方案.md'}`")
 
     # === 步骤A：压力测试 ===
     if st.session_state.get("modeling_plan") and not st.session_state.get("pressure_report"):
@@ -666,6 +671,11 @@ elif st.session_state.phase == "modeling":
     if st.session_state.get("pressure_report"):
         with st.expander("📋 压力测试报告", expanded=True):
             st.markdown(st.session_state.pressure_report)
+        if st.button("💾 保存报告到 prepare_claude/", key="save_pressure"):
+            prep_dir = Path(__file__).resolve().parent.parent / "workspace" / "prepare_claude"
+            prep_dir.mkdir(parents=True, exist_ok=True)
+            (prep_dir / "压力测试报告.md").write_text(st.session_state.pressure_report, encoding="utf-8")
+            st.success(f"已保存到 `{prep_dir.absolute() / '压力测试报告.md'}`")
 
     # === 步骤B：生成并保存 PRD 到 workspace/ 文件夹 ===
     if st.session_state.get("modeling_plan") and not st.session_state.get("prd_draft"):
