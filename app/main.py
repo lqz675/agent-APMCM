@@ -1115,6 +1115,7 @@ elif st.session_state.phase == "figure":
                 st.session_state.modeling_plan,
                 st.session_state.coding_result or ""
             )
+            prompt += "\n\n每个图表请标注好题号和名称，格式如：**图表1-1 线性回归曲线**"
             figure_desc = gpt_with_retry(prompt)
             st.session_state.figure_descriptions = figure_desc
             logger.log_figure(figure_desc)
