@@ -500,6 +500,15 @@ if st.session_state.phase == "input":
         if not topics:
             st.error("请至少上传一个赛题 PDF")
         else:
+            # 清除上次所有分析结果，从当前文件重新开始
+            for key in ["topic_sims", "topic_scores", "topic_recommendation",
+                        "modeling_plan", "coding_result", "paper_draft",
+                        "pressure_report", "prd_draft", "prd_final",
+                        "figure_descriptions", "polished_paper", "paper_sections",
+                        "selected_topic", "selected_topic_idx", "selected_sims",
+                        "completed_stages", "grill_rounds", "pressure_test_result",
+                        "grill_result"]:
+                st.session_state.pop(key, None)
             st.session_state.topics = topics
             logger.log_user_input(f"用户上传了{len(topics)}个赛题PDF: {[n for n in uploaded_names if n]}")
             st.session_state.phase = "topic_selection"
