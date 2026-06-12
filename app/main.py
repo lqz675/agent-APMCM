@@ -539,7 +539,6 @@ elif st.session_state.phase == "topic_selection":
     st.header("📊 选题分析")
 
     if st.button("⬅️ 返回上传赛题", key="back_to_input"):
-        clear_downstream("input")
         st.session_state.phase = "input"
         st.session_state.memory_logger.new_stage("input")
         st.session_state.memory_logger.log_system_event("返回阶段: input", "用户从选题分析返回")
@@ -601,7 +600,6 @@ elif st.session_state.phase == "modeling":
     st.header("🔬 数学建模方案")
 
     if st.button("⬅️ 返回选题分析", key="back_to_topic"):
-        clear_downstream("topic_selection")
         st.session_state.phase = "topic_selection"
         st.session_state.memory_logger.new_stage("topic_selection")
         st.session_state.memory_logger.log_system_event("返回阶段: topic_selection")
@@ -776,7 +774,6 @@ elif st.session_state.phase == "pressure_test":
     col1, col2 = st.columns(2)
     with col1:
         if st.button("🔄 返回修改方案"):
-            clear_downstream("modeling")
             st.session_state.phase = "modeling"
             st.session_state.memory_logger.new_stage(st.session_state.phase)
             st.session_state.memory_logger.log_system_event(
@@ -821,7 +818,6 @@ elif st.session_state.phase == "grill_me":
         col1, col2 = st.columns(2)
         with col1:
             if st.button("🔄 返回调整方案"):
-                clear_downstream("modeling")
                 st.session_state.phase = "modeling"
                 st.session_state.memory_logger.new_stage(st.session_state.phase)
                 st.session_state.memory_logger.log_system_event(
@@ -846,7 +842,6 @@ elif st.session_state.phase == "coding":
     st.header("💻 代码生成")
 
     if st.button("⬅️ 返回建模方案", key="back_to_modeling"):
-        clear_downstream("modeling")
         st.session_state.phase = "modeling"
         st.session_state.memory_logger.new_stage("modeling")
         autosave()
@@ -925,6 +920,7 @@ elif st.session_state.phase == "coding":
                 st.rerun()
         with col_redo:
             if st.button("🔄 重新生成", key="coding_redo"):
+                clear_downstream("coding")
                 st.session_state.coding_result = None
                 st.rerun()
 
@@ -1041,7 +1037,6 @@ elif st.session_state.phase == "figure":
     st.header("📊 图表生成方案")
 
     if st.button("⬅️ 返回代码生成", key="back_to_coding"):
-        clear_downstream("coding")
         st.session_state.phase = "coding"
         st.session_state.memory_logger.new_stage("coding")
         autosave()
@@ -1089,7 +1084,6 @@ elif st.session_state.phase == "paper":
     st.header("📝 论文初稿")
 
     if st.button("⬅️ 返回图表方案", key="back_to_figure"):
-        clear_downstream("figure")
         st.session_state.phase = "figure"
         st.session_state.memory_logger.new_stage("figure")
         autosave()
@@ -1142,7 +1136,6 @@ elif st.session_state.phase == "polish":
     st.header("✨ 论文润色")
 
     if st.button("⬅️ 返回论文初稿", key="back_to_paper"):
-        clear_downstream("paper")
         st.session_state.phase = "paper"
         st.session_state.memory_logger.new_stage("paper")
         autosave()
