@@ -69,7 +69,12 @@ if "paper_draft" not in st.session_state:
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 if "session_id" not in st.session_state:
-    st.session_state.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    params = st.query_params
+    if "sid" in params:
+        st.session_state.session_id = params["sid"]
+    else:
+        st.session_state.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        st.query_params["sid"] = st.session_state.session_id
 if "quota_monitor" not in st.session_state:
     st.session_state.quota_monitor = QuotaMonitor(platform="Claude Sonnet")
 if "completed_stages" not in st.session_state:
@@ -129,6 +134,15 @@ if not st.session_state.resume_attempted:
                 restored = build_context_from_workspace(st.session_state)
                 for msg in restored:
                     st.session_state.memory_logger.log_system_event("上下文重建", msg)
+                # 恢复已上传的赛题文件
+                upload_dir = Path(__file__).resolve().parent.parent / "memory" / st.session_state.session_id / "uploads"
+                for i in range(1, 4):
+                    tf = upload_dir / f"topic_{i}.txt"
+                    nf = upload_dir / f"topic_{i}_name.txt"
+                    if tf.exists():
+                        st.session_state[f"extracted_{i-1}"] = tf.read_text(encoding="utf-8")
+                    if nf.exists():
+                        st.session_state[f"uploaded_name_{i-1}"] = nf.read_text(encoding="utf-8")
                 st.session_state.resume_attempted = True
         except Exception:
             pass
@@ -374,6 +388,11 @@ if st.session_state.phase == "input":
                     with st.spinner(f"解析选题{i+1}..."):
                         st.session_state[f"extracted_{i}"] = _extract_pdf(uploaded.read())
                     st.session_state[f"uploaded_name_{i}"] = uploaded.name
+                    # 保存到磁盘，防止刷新丢失
+                    upload_dir = Path(__file__).resolve().parent.parent / "memory" / st.session_state.session_id / "uploads"
+                    upload_dir.mkdir(parents=True, exist_ok=True)
+                    (upload_dir / f"topic_{i+1}.txt").write_text(st.session_state[f"extracted_{i}"], encoding="utf-8")
+                    (upload_dir / f"topic_{i+1}_name.txt").write_text(uploaded.name, encoding="utf-8")
                 uploaded_texts[i] = st.session_state[f"extracted_{i}"]
                 uploaded_names[i] = st.session_state[f"uploaded_name_{i}"]
                 st.success(f"已解析: {uploaded.name}")
