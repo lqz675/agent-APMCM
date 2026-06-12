@@ -920,6 +920,11 @@ elif st.session_state.phase == "coding":
                 st.session_state.modeling_plan,
                 st.session_state.selected_sims
             )
+            # 注入 workspace/PRD.md 和 workspace/CLAUDE.md
+            ws = Path(__file__).resolve().parent.parent / "workspace"
+            for ws_file, label in [(ws / "PRD.md", "PRD"), (ws / "CLAUDE.md", "CLAUDE")]:
+                if ws_file.exists():
+                    prompt += f"\n\n## {label}.md\n{ws_file.read_text(encoding='utf-8')[:2000]}"
             coding_result = gpt_with_retry(prompt, max_tokens=8000)
             st.session_state.coding_result = coding_result
             logger.log_coding(coding_result)
@@ -956,10 +961,10 @@ elif st.session_state.phase == "coding":
                 qm.record(f"论文节-{section_name}", qm.estimate_tokens(section))
                 st.session_state.paper_sections[section_name] = section
 
-                workspace = Path("workspace") / st.session_state.session_id / "paper_sections"
-                workspace.mkdir(parents=True, exist_ok=True)
+                writing_dir = Path(__file__).resolve().parent.parent / "workspace" / "writing"
+                writing_dir.mkdir(parents=True, exist_ok=True)
                 safe_name = section_name.replace(" ", "_").replace(".", "")
-                (workspace / f"{safe_name}.md").write_text(section, encoding="utf-8")
+                (writing_dir / f"{safe_name}.md").write_text(section, encoding="utf-8")
 
             st.markdown(section)
             st.success(f"✅ {section_name} 已保存")
@@ -989,9 +994,10 @@ elif st.session_state.phase == "coding":
     col_save, col_claude = st.columns(2)
 
     with col_save:
-        if st.button("💾 保存代码到本地文件夹", key="save_code"):
-            workspace.mkdir(parents=True, exist_ok=True)
-            code_path = workspace / "model_solution.py"
+        if st.button("💾 保存代码到 workspace/coding/", key="save_code"):
+            code_dir = Path(__file__).resolve().parent.parent / "workspace" / "coding"
+            code_dir.mkdir(parents=True, exist_ok=True)
+            code_path = code_dir / "model_solution.py"
             code_path.write_text(st.session_state.coding_result, encoding="utf-8")
 
             readme_content = f"""# 数学建模代码
@@ -1007,9 +1013,9 @@ python model_solution.py
 ## 建模方案摘要
 {(st.session_state.get('modeling_plan') or '')[:400]}
 """
-            (workspace / "README.md").write_text(readme_content, encoding="utf-8")
-            st.success(f"✅ 代码已保存到 `{workspace.absolute()}`")
-            st.code(f"cd {workspace.absolute()}\npython model_solution.py", language="bash")
+            (code_dir / "README.md").write_text(readme_content, encoding="utf-8")
+            st.success(f"✅ 代码已保存到 `{code_dir.absolute()}`")
+            st.code(f"cd {code_dir.absolute()}\npython model_solution.py", language="bash")
 
     with col_claude:
         if st.button("🤖 生成 opencode 指令文件", key="gen_claude"):
@@ -1112,6 +1118,9 @@ elif st.session_state.phase == "figure":
             figure_desc = gpt_with_retry(prompt)
             st.session_state.figure_descriptions = figure_desc
             logger.log_figure(figure_desc)
+            pic_dir = Path(__file__).resolve().parent.parent / "workspace" / "picture"
+            pic_dir.mkdir(parents=True, exist_ok=True)
+            (pic_dir / "figure_plan.md").write_text(figure_desc, encoding="utf-8")
 
     st.markdown(st.session_state.figure_descriptions)
 
