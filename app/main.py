@@ -696,43 +696,86 @@ elif st.session_state.phase == "modeling":
             prd_path.write_text(st.session_state.prd_draft, encoding="utf-8")
             st.success(f"✅ 已覆盖保存到 `{prd_path.absolute()}`")
 
-    # === 步骤C：生成 CLAUDE.md ===
+    # === 步骤C：生成 CLAUDE.md（LLM 理解 prepare_claude/ 后生成）===
     if st.session_state.get("modeling_plan"):
         if st.button("🤖 生成 CLAUDE.md 到 workspace/", key="gen_claude_md"):
             workspace_dir = Path(__file__).resolve().parent.parent / "workspace"
-            claude_md = f"""# 数学建模任务 — APMCM Agent 生成
-生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}
+            prep_dir = workspace_dir / "prepare_claude"
+            prep_dir.mkdir(parents=True, exist_ok=True)
 
-## 赛题
-{st.session_state.get('selected_topic', '')[:500]}
+            # 确保 prepare_claude/ 下有最新内容
+            (prep_dir / "赛题.txt").write_text(st.session_state.get('selected_topic', '')[:2000], encoding="utf-8")
+            (prep_dir / "建模方案.md").write_text(st.session_state.get('modeling_plan', '')[:2000], encoding="utf-8")
+            prd_text = st.session_state.get('prd_draft', '') or (workspace_dir / "PRD.md").read_text(encoding="utf-8") if (workspace_dir / "PRD.md").exists() else ""
+            (prep_dir / "PRD摘要.md").write_text(prd_text[:2000], encoding="utf-8")
+            pressure_text = st.session_state.get('pressure_report', '') or ""
+            (prep_dir / "压力测试报告.md").write_text(pressure_text[:2000], encoding="utf-8")
 
-## 建模方案摘要
-{st.session_state.get('modeling_plan', '')[:1000]}
+            # LLM 读取 prepare_claude/ 下所有文件
+            prep_contents = []
+            for f in sorted(prep_dir.glob("*")):
+                if f.is_file():
+                    try:
+                        content = f.read_text(encoding="utf-8")[:2000]
+                        prep_contents.append(f"### {f.name}\n{content}")
+                    except Exception:
+                        pass
+            prep_text = "\n\n".join(prep_contents)
 
-## PRD 摘要
-{st.session_state.get('prd_draft', '（未生成）')[:500]}
+            with st.spinner("LLM 正在理解 prepare_claude/ 内容并生成 CLAUDE.md..."):
+                claude_prompt = f"""你是数学建模竞赛技术经理。请先理解以下全部项目文件内容，然后生成一份 CLAUDE.md 操作手册。
 
-## 压力测试摘要
-{st.session_state.get('pressure_report', '（未运行）')[:500]}
+## 项目文件内容
+{prep_text}
 
-## 执行规范
+## CLAUDE.md 结构要求
+按以下结构生成 Markdown：
+
+# 数学建模任务 — APMCM Agent 生成
+**生成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M')}
+
+## 1. 任务概述
+用自己的话概括赛题和核心目标
+
+## 2. 建模方案摘要
+提取方案中的关键方法和数学模型
+
+## 3. 执行计划（表格）
+| 阶段 | 任务 | 预期产出 | 验收标准 |
+|------|------|----------|----------|
+
+## 4. 技术约束
+- 编程语言/库/工具
+- 数据格式要求
+- 输出规范
+
+## 5. 文件结构
+```
+workspace/
+├── coding/     # 代码输出
+├── writing/    # 论文各节
+├── picture/    # 图表输出
+└── ...
+```
+
+## 6. 执行规范
 - 编码前: think（设计决策审查）
 - 编码中: tdd（测试驱动开发）
 - 编码后: check（正确性/健壮性检查）
 - 遇Bug: hunt（定位修复）
 
-## 文件结构
-```
-workspace/
-├── model_solution.py     # 核心求解代码
-├── figures/              # 图表输出
-└── results/              # 计算结果
-```
-"""
+## 7. 关键风险与注意事项
+从压力测试报告中提取
+
+直接输出 Markdown，不要前后缀。"""
+                claude_md = gpt_with_retry(claude_prompt, max_tokens=3000)
+
             claude_path = workspace_dir / "CLAUDE.md"
             claude_path.write_text(claude_md, encoding="utf-8")
-            qm.record("CLAUDE.md生成", 500)
-            st.success(f"✅ CLAUDE.md 已保存到 `{claude_path.absolute()}`")
+            qm.record("CLAUDE.md生成", qm.estimate_tokens(claude_md))
+            st.success(f"✅ CLAUDE.md 已由 LLM 理解生成 → `{claude_path.absolute()}`")
+            with st.expander("📄 预览 CLAUDE.md"):
+                st.markdown(claude_md[:2000])
             autosave()
 
     # === 步骤D：grill-me 需求对齐循环 ===
