@@ -25,6 +25,14 @@ from skills_bridge import SCIPILOT_DIR, GPT_ACADEMIC_DIR, SKILLS_DIR
 from skills_runner  import run_pressure_test, run_grill_me, run_code_check, get_skill_comparison
 from prd_generator  import generate_prd, generate_claude_md, export_prd_file
 from quota_monitor  import QuotaMonitor
+from app.inbox_watcher import (
+    ensure_inbox_dirs, get_inbox_status, get_new_files,
+    mark_as_processed
+)
+from app.webai_bridge import (
+    export_context_package, import_webai_response, list_export_files
+)
+from app.memory_logger import MemoryLogger
 
 st.set_page_config(page_title="APMCM 数学建模 Agent", page_icon="🎓", layout="wide")
 
@@ -77,6 +85,19 @@ if "paper_sections" not in st.session_state:
     st.session_state.paper_sections = {}   # {section_name: content}
 if "reference_loaded" not in st.session_state:
     st.session_state.reference_loaded = False
+if "memory_logger" not in st.session_state:
+    st.session_state.memory_logger = None
+if "webai_import_filename" not in st.session_state:
+    st.session_state.webai_import_filename = ""
+if "webai_imported_content" not in st.session_state:
+    st.session_state.webai_imported_content = ""
+if "inbox_last_scan" not in st.session_state:
+    st.session_state.inbox_last_scan = None
+
+if st.session_state.memory_logger is None:
+    st.session_state.memory_logger = MemoryLogger(st.session_state.session_id)
+
+ensure_inbox_dirs()
 
 logger = st.session_state.logger
 rag = st.session_state.rag
@@ -132,6 +153,79 @@ with st.sidebar:
 
     st.divider()
 
+    # 文件收件箱
+    with st.expander("📥 文件收件箱", expanded=False):
+        st.caption("将文件直接拖入对应目录，agent 启动时自动加载")
+        inbox_path = Path(__file__).resolve().parent.parent / "inbox"
+        st.code(str(inbox_path), language=None)
+        if st.button("🔄 扫描新文件", key="btn_scan_inbox"):
+            status = get_inbox_status()
+            for subdir, info in status.items():
+                label = {"problems":"赛题","papers":"论文","references":"参考文献",
+                         "knowledge":"知识库","web_ai":"网页AI回复"}.get(subdir, subdir)
+                new_badge = f"  🆕 {info['new']} 个新文件" if info["new"] > 0 else ""
+                st.write(f"**{label}**: {info['total']} 个文件{new_badge}")
+            total_loaded = 0
+            rag = st.session_state.get("rag")
+            if rag:
+                for sub in ["problems","papers","references","knowledge"]:
+                    new_files = get_new_files(sub)
+                    if new_files:
+                        n = rag.add_inbox_files(sub, new_files)
+                        mark_as_processed(new_files)
+                        total_loaded += n
+                if total_loaded > 0:
+                    st.success(f"✅ 已加载 {total_loaded} 个新文件到知识库")
+        st.caption("📂 子目录：problems / papers / references / knowledge / web_ai")
+
+    st.divider()
+
+    # AI 网页版协作
+    with st.expander("🔗 AI 网页版协作", expanded=False):
+        st.caption("将当前阶段上下文导出，上传给网页版 AI；或读取网页版 AI 的回复")
+        if st.button("📤 导出上下文给网页版 AI", key="btn_export_webai"):
+            workspace_root = Path(__file__).resolve().parent.parent / "workspace"
+            export_path = export_context_package(
+                phase=st.session_state.get("phase", "input"),
+                session_id=st.session_state.session_id,
+                context=dict(st.session_state),
+                workspace_root=workspace_root
+            )
+            st.success("✅ 已导出")
+            st.code(str(export_path), language=None)
+            st.caption("请到上述路径找到文件，上传给网页版 AI")
+        st.divider()
+        st.caption("将网页版 AI 的回复保存到 inbox/web_ai/ 目录后，在此输入文件名：")
+        filename_input = st.text_input(
+            "回复文件名（如 chatgpt_reply.md）",
+            key="webai_filename_input",
+            placeholder="chatgpt_reply.md"
+        )
+        if st.button("📥 读取网页版 AI 回复", key="btn_import_webai"):
+            if filename_input.strip():
+                content = import_webai_response(filename_input.strip())
+                st.session_state.webai_imported_content = content
+                if content.startswith("❌"):
+                    st.error(content)
+                else:
+                    st.success(f"✅ 已读取 {len(content)} 字符")
+                    st.text_area("回复内容预览", value=content[:500]+"...", height=150, disabled=True)
+            else:
+                st.warning("请先输入文件名")
+        if st.session_state.get("webai_imported_content"):
+            st.info("💡 网页版 AI 回复已就绪，可在对话框中输入\"使用网页AI方案\"来应用")
+        st.divider()
+        st.caption("本次 session 已导出的文件：")
+        workspace_root_exports = Path(__file__).resolve().parent.parent / "workspace"
+        exports = list_export_files(st.session_state.session_id, workspace_root_exports)
+        if exports:
+            for e in exports[-5:]:
+                st.text(f"📄 {e['filename']}")
+        else:
+            st.caption("（暂无导出记录）")
+
+    st.divider()
+
     # Skill 对比查询
     with st.expander("🛠️ Skills 说明"):
         st.markdown(get_skill_comparison())
@@ -142,6 +236,7 @@ with st.sidebar:
     st.subheader("💬 随时提问")
     user_question = st.text_input("对当前项目有什么疑问？", key="sidebar_question", placeholder="例如：为什么选这个模型？")
     if user_question and st.button("提问", key="sidebar_ask"):
+        st.session_state.memory_logger.log_message("user", user_question)
         ctx = f"""项目进度：{completed}
 当前阶段：{st.session_state.get('phase', '未知')}
 建模方案摘要：{st.session_state.get('modeling_plan', '')[:400]}
@@ -149,6 +244,7 @@ PRD摘要：{st.session_state.get('prd_final', '')[:400]}"""
         from model import gpt_with_retry
         answer = gpt_with_retry(f"用户问题：{user_question}\n\n项目背景：{ctx}", max_tokens=500)
         qm.record("用户提问", qm.estimate_tokens(answer))
+        st.session_state.memory_logger.log_message("assistant", answer)
         st.info(answer)
 
 st.title("🎓 APMCM 数学建模比赛 Agent")
@@ -197,6 +293,11 @@ if st.session_state.phase == "input":
             st.session_state.topics = topics
             logger.log_user_input(f"用户上传了{len(topics)}个赛题PDF: {[n for n in uploaded_names if n]}")
             st.session_state.phase = "topic_selection"
+            st.session_state.memory_logger.new_stage(st.session_state.phase)
+            st.session_state.memory_logger.log_system_event(
+                "进入阶段: topic_selection",
+                f"session_id={st.session_state.session_id}"
+            )
             st.rerun()
 
 # ============ Phase 2: Topic Selection ============
@@ -245,6 +346,11 @@ elif st.session_state.phase == "topic_selection":
             st.session_state.selected_sims = st.session_state.topic_sims[selected_idx]
             logger.log_user_feedback("topic_selection", f"用户选择选题{selected_idx+1}")
             st.session_state.phase = "modeling"
+            st.session_state.memory_logger.new_stage(st.session_state.phase)
+            st.session_state.memory_logger.log_system_event(
+                "进入阶段: modeling",
+                f"session_id={st.session_state.session_id}"
+            )
             st.rerun()
 
 # ============ Phase 3: Modeling ============
@@ -356,6 +462,11 @@ elif st.session_state.phase == "modeling":
                         st.session_state.reference_loaded = True
 
                 st.session_state.phase = "coding"
+                st.session_state.memory_logger.new_stage(st.session_state.phase)
+                st.session_state.memory_logger.log_system_event(
+                    "进入阶段: coding",
+                    f"session_id={st.session_state.session_id}"
+                )
                 st.rerun()
 
     st.divider()
@@ -372,11 +483,21 @@ elif st.session_state.phase == "modeling":
         if st.button("🧪 压力测试", type="primary"):
             logger.log_user_feedback("modeling", "用户确认建模方案,进入压力测试")
             st.session_state.phase = "pressure_test"
+            st.session_state.memory_logger.new_stage(st.session_state.phase)
+            st.session_state.memory_logger.log_system_event(
+                "进入阶段: pressure_test",
+                f"session_id={st.session_state.session_id}"
+            )
             st.rerun()
     with col3:
         if st.button("⏭️ 跳过测试"):
             logger.log_user_feedback("modeling", "用户跳过测试,直接进入代码生成")
             st.session_state.phase = "coding"
+            st.session_state.memory_logger.new_stage(st.session_state.phase)
+            st.session_state.memory_logger.log_system_event(
+                "进入阶段: coding",
+                f"session_id={st.session_state.session_id}"
+            )
             st.rerun()
 
 # ============ Phase 4: Pressure Test ============
@@ -398,10 +519,20 @@ elif st.session_state.phase == "pressure_test":
     with col1:
         if st.button("🔄 返回修改方案"):
             st.session_state.phase = "modeling"
+            st.session_state.memory_logger.new_stage(st.session_state.phase)
+            st.session_state.memory_logger.log_system_event(
+                "进入阶段: modeling",
+                f"session_id={st.session_state.session_id}"
+            )
             st.rerun()
     with col2:
         if st.button("✅ 方案通过,对齐用户期望", type="primary"):
             st.session_state.phase = "grill_me"
+            st.session_state.memory_logger.new_stage(st.session_state.phase)
+            st.session_state.memory_logger.log_system_event(
+                "进入阶段: grill_me",
+                f"session_id={st.session_state.session_id}"
+            )
             st.rerun()
 
 # ============ Phase 5: Grill Me ============
@@ -430,10 +561,20 @@ elif st.session_state.phase == "grill_me":
         with col1:
             if st.button("🔄 返回调整方案"):
                 st.session_state.phase = "modeling"
+                st.session_state.memory_logger.new_stage(st.session_state.phase)
+                st.session_state.memory_logger.log_system_event(
+                    "进入阶段: modeling",
+                    f"session_id={st.session_state.session_id}"
+                )
                 st.rerun()
         with col2:
             if st.button("✅ 方案对齐,开始编码", type="primary"):
                 st.session_state.phase = "coding"
+                st.session_state.memory_logger.new_stage(st.session_state.phase)
+                st.session_state.memory_logger.log_system_event(
+                    "进入阶段: coding",
+                    f"session_id={st.session_state.session_id}"
+                )
                 st.rerun()
 
 # ============ Phase 6: Coding ============
@@ -500,6 +641,11 @@ elif st.session_state.phase == "coding":
                 if "代码生成" not in st.session_state.completed_stages:
                     st.session_state.completed_stages.append("代码生成")
                 st.session_state.phase = "figure"
+                st.session_state.memory_logger.new_stage(st.session_state.phase)
+                st.session_state.memory_logger.log_system_event(
+                    "进入阶段: figure",
+                    f"session_id={st.session_state.session_id}"
+                )
                 st.rerun()
         with col_redo:
             if st.button("🔄 重新生成", key="coding_redo"):
@@ -595,10 +741,20 @@ python model_solution.py
     with col2:
         if st.button("📊 生成图表", type="primary"):
             st.session_state.phase = "figure"
+            st.session_state.memory_logger.new_stage(st.session_state.phase)
+            st.session_state.memory_logger.log_system_event(
+                "进入阶段: figure",
+                f"session_id={st.session_state.session_id}"
+            )
             st.rerun()
     with col3:
         if st.button("⏭️ 跳过图表"):
             st.session_state.phase = "paper"
+            st.session_state.memory_logger.new_stage(st.session_state.phase)
+            st.session_state.memory_logger.log_system_event(
+                "进入阶段: paper",
+                f"session_id={st.session_state.session_id}"
+            )
             st.rerun()
 
 # ============ Phase 7: Figure ============
@@ -633,6 +789,11 @@ elif st.session_state.phase == "figure":
     with col2:
         if st.button("📝 生成论文初稿", type="primary"):
             st.session_state.phase = "paper"
+            st.session_state.memory_logger.new_stage(st.session_state.phase)
+            st.session_state.memory_logger.log_system_event(
+                "进入阶段: paper",
+                f"session_id={st.session_state.session_id}"
+            )
             st.rerun()
 
 # ============ Phase 8: Paper ============
@@ -661,10 +822,20 @@ elif st.session_state.phase == "paper":
     with col2:
         if st.button("✨ 润色论文", type="primary"):
             st.session_state.phase = "polish"
+            st.session_state.memory_logger.new_stage(st.session_state.phase)
+            st.session_state.memory_logger.log_system_event(
+                "进入阶段: polish",
+                f"session_id={st.session_state.session_id}"
+            )
             st.rerun()
     with col3:
         if st.button("📥 导出完成"):
             st.session_state.phase = "done"
+            st.session_state.memory_logger.new_stage(st.session_state.phase)
+            st.session_state.memory_logger.log_system_event(
+                "进入阶段: done",
+                f"session_id={st.session_state.session_id}"
+            )
             st.rerun()
 
 # ============ Phase 9: Polish ============
@@ -692,6 +863,11 @@ elif st.session_state.phase == "polish":
         with col2:
             if st.button("📥 完成,查看总结", type="primary"):
                 st.session_state.phase = "done"
+                st.session_state.memory_logger.new_stage(st.session_state.phase)
+                st.session_state.memory_logger.log_system_event(
+                    "进入阶段: done",
+                    f"session_id={st.session_state.session_id}"
+                )
                 st.rerun()
 
         # === 论文导出 ===
@@ -810,6 +986,13 @@ elif st.session_state.phase == "done":
         st.session_state.logger = WorkflowLogger()
         st.session_state.rag = rag
         st.session_state.phase = "input"
+        st.session_state.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        st.session_state.memory_logger = MemoryLogger(st.session_state.session_id)
+        st.session_state.memory_logger.new_stage("input")
+        st.session_state.memory_logger.log_system_event(
+            "新会话开始",
+            f"session_id={st.session_state.session_id}"
+        )
         st.rerun()
 
 # ============ Chat ============
@@ -817,7 +1000,13 @@ st.divider()
 st.header("💬 与Agent对话")
 chat_input = st.chat_input("向Agent提问或提供反馈...")
 if chat_input:
+    webai_content = st.session_state.get("webai_imported_content", "")
+    if webai_content and ("使用网页AI方案" in chat_input or "应用网页AI回复" in chat_input):
+        chat_input = f"【网页版AI方案】\n{webai_content}\n\n【用户指令】\n{chat_input}"
+        st.session_state.webai_imported_content = ""
+
     st.session_state.chat_history.append({"role": "user", "content": chat_input})
+    st.session_state.memory_logger.log_message("user", chat_input)
     with st.spinner("Agent思考中..."):
         ctx = f"""当前阶段: {st.session_state.phase}
 当前选题: {st.session_state.get('selected_topic', '未选择')[:500]}
@@ -827,6 +1016,7 @@ if chat_input:
             {"role": "user", "content": chat_input}
         ])
     st.session_state.chat_history.append({"role": "assistant", "content": response})
+    st.session_state.memory_logger.log_message("assistant", response)
 
 for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]):

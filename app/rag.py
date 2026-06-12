@@ -357,3 +357,122 @@ class RAG:
             "references":       self.search(query, self.reference_index, self.reference_texts, topk) if self.reference_index else [],
         }
         return results
+
+    def add_inbox_files(self, subdir_name, file_paths):
+        """将 inbox 扫描出的新文件增量加载进已有 RAG 索引。
+
+        子目录到索引的映射：
+        - "problems"   → self.problem_index
+        - "papers"     → self.paper_index
+        - "references" → self.ref_index
+        - "knowledge"  → self.knowledge_index
+
+        Args:
+            subdir_name (str): 子目录名（problems/papers/references/knowledge）
+            file_paths (list): 文件 Path 列表
+
+        Returns:
+            int: 成功加载的文件数量
+        """
+        if not file_paths:
+            return 0
+
+        from pathlib import Path
+        from pypdf import PdfReader
+        from model import get_embeddings_batch
+
+        # 确定目标数据结构
+        mapping = {
+            "problems": {
+                "texts_attr": "problems_texts", "files_attr": "problems_files",
+                "chunks_attr": "problem_chunks", "chunk_files_attr": "problem_chunk_files",
+                "index_attr": "problem_index",
+            },
+            "papers": {
+                "texts_attr": "papers_texts", "files_attr": "papers_files",
+                "chunks_attr": "paper_chunks", "chunk_files_attr": "paper_chunk_files",
+                "index_attr": "paper_index",
+            },
+            "references": {
+                "texts_attr": "refs_texts", "files_attr": "refs_files",
+                "chunks_attr": "ref_chunks", "chunk_files_attr": "ref_chunk_files",
+                "index_attr": "ref_index",
+            },
+            "knowledge": {
+                "texts_attr": "knowledge_texts", "files_attr": None,
+                "chunks_attr": None, "chunk_files_attr": None,
+                "index_attr": "knowledge_index",
+            },
+        }
+
+        if subdir_name not in mapping:
+            return 0
+
+        cfg = mapping[subdir_name]
+
+        new_texts = []
+        new_filenames = []
+        loaded_count = 0
+
+        for fp in file_paths:
+            fp = Path(fp)
+            if not fp.exists():
+                continue
+            try:
+                txt = ""
+                pdf = PdfReader(str(fp))
+                for page in pdf.pages:
+                    extracted = page.extract_text()
+                    if extracted:
+                        txt += extracted + "\n"
+                if txt.strip():
+                    new_texts.append(txt)
+                    new_filenames.append(fp.name)
+                    loaded_count += 1
+            except Exception:
+                continue
+
+        if not new_texts:
+            return 0
+
+        new_chunks = []
+        for t in new_texts:
+            new_chunks.extend(self._chunk_for_indexing(t))
+
+        if not new_chunks:
+            return loaded_count
+
+        batch_size = 10
+        new_vectors_list = []
+        for i in range(0, len(new_chunks), batch_size):
+            batch = new_chunks[i:i + batch_size]
+            new_vectors_list.extend(get_embeddings_batch(batch))
+        new_vectors = np.array(new_vectors_list).astype("float32")
+        faiss.normalize_L2(new_vectors)
+
+        # 追加到文本和文件列表
+        texts_list = getattr(self, cfg["texts_attr"])
+        texts_list.extend(new_texts)
+
+        if cfg["files_attr"]:
+            files_list = getattr(self, cfg["files_attr"])
+            files_list.extend(new_filenames)
+
+        # 追加 chunk 数据
+        if cfg["chunks_attr"] and cfg["chunk_files_attr"]:
+            chunks_list = getattr(self, cfg["chunks_attr"])
+            chunk_files_list = getattr(self, cfg["chunk_files_attr"])
+            for t, f in zip(new_texts, new_filenames):
+                for c in self._chunk_for_indexing(t):
+                    chunks_list.append(c)
+                    chunk_files_list.append(f)
+
+        # 追加向量到索引（或创建新索引）
+        index = getattr(self, cfg["index_attr"])
+        if index is None:
+            dim = new_vectors.shape[1]
+            index = faiss.IndexFlatIP(dim)
+            setattr(self, cfg["index_attr"], index)
+
+        index.add(new_vectors)
+        return loaded_count
