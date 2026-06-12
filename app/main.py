@@ -27,12 +27,13 @@ from prd_generator  import generate_prd, generate_claude_md, export_prd_file
 from quota_monitor  import QuotaMonitor
 from app.inbox_watcher import (
     ensure_inbox_dirs, get_inbox_status, get_new_files,
-    mark_as_processed
+    mark_as_processed, read_data_file
 )
 from app.webai_bridge import (
     export_context_package, import_webai_response, list_export_files
 )
 from app.memory_logger import MemoryLogger
+from app.utils import load_tabular_file, list_data_files
 
 st.set_page_config(page_title="APMCM 数学建模 Agent", page_icon="🎓", layout="wide")
 
@@ -93,6 +94,8 @@ if "webai_imported_content" not in st.session_state:
     st.session_state.webai_imported_content = ""
 if "inbox_last_scan" not in st.session_state:
     st.session_state.inbox_last_scan = None
+if "loaded_data_files" not in st.session_state:
+    st.session_state.loaded_data_files = {}
 
 if st.session_state.memory_logger is None:
     st.session_state.memory_logger = MemoryLogger(st.session_state.session_id)
@@ -176,7 +179,37 @@ with st.sidebar:
                         total_loaded += n
                 if total_loaded > 0:
                     st.success(f"✅ 已加载 {total_loaded} 个新文件到知识库")
-        st.caption("📂 子目录：problems / papers / references / knowledge / web_ai")
+        st.caption("📂 子目录：problems / papers / references / knowledge / web_ai / data")
+
+        st.divider()
+        st.caption("📊 数据文件（CSV / Excel）")
+        st.caption("将数据文件放入 inbox/data/ 目录后点击加载：")
+
+        data_path = Path(__file__).resolve().parent.parent / "inbox" / "data"
+        st.code(str(data_path), language=None)
+
+        data_files = list_data_files(data_path)
+        if data_files:
+            for f in data_files:
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.text(f"📄 {f['name']} ({f['size_kb']} KB)")
+                with col2:
+                    btn_key = f"load_data_{f['name']}"
+                    if st.button("加载", key=btn_key):
+                        summary = read_data_file(f["name"])
+                        st.session_state.loaded_data_files[f["name"]] = summary
+                        st.session_state.memory_logger.log_system_event(
+                            "加载数据文件", f["name"]
+                        )
+                        st.success(f"✅ 已加载 {f['name']}")
+                        st.text_area("预览", value=summary[:300]+"...", height=100, disabled=True)
+        else:
+            st.caption("（inbox/data/ 目录下暂无数据文件）")
+
+        if st.session_state.get("loaded_data_files"):
+            names = list(st.session_state.loaded_data_files.keys())
+            st.info(f'💡 已加载 {len(names)} 个数据文件：{", ".join(names)}\n可在提问时说"分析数据"自动引用')
 
     st.divider()
 
@@ -583,8 +616,14 @@ elif st.session_state.phase == "coding":
 
     if st.session_state.coding_result is None:
         with st.spinner("正在生成Python代码..."):
+            data_context = ""
+            if st.session_state.get("loaded_data_files"):
+                data_context = "\n\n## 可用数据文件\n"
+                for fname, summary in st.session_state.loaded_data_files.items():
+                    data_context += f"\n### {fname}\n{summary}\n"
+            topic_with_data = st.session_state.selected_topic + data_context
             prompt = get_coding_prompt(
-                st.session_state.selected_topic,
+                topic_with_data,
                 st.session_state.modeling_plan,
                 st.session_state.selected_sims
             )
@@ -1004,6 +1043,13 @@ if chat_input:
     if webai_content and ("使用网页AI方案" in chat_input or "应用网页AI回复" in chat_input):
         chat_input = f"【网页版AI方案】\n{webai_content}\n\n【用户指令】\n{chat_input}"
         st.session_state.webai_imported_content = ""
+
+    if ("分析数据" in chat_input or "数据文件" in chat_input) \
+            and st.session_state.get("loaded_data_files"):
+        data_inject = "\n".join(
+            f"【{k}】\n{v}" for k, v in st.session_state.loaded_data_files.items()
+        )
+        chat_input = f"以下是已加载的数据文件内容：\n{data_inject}\n\n用户问题：{chat_input}"
 
     st.session_state.chat_history.append({"role": "user", "content": chat_input})
     st.session_state.memory_logger.log_message("user", chat_input)

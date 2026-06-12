@@ -5,7 +5,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 INBOX_ROOT = PROJECT_ROOT / "inbox"
-INBOX_SUBDIRS = ["problems", "papers", "references", "knowledge", "web_ai"]
+INBOX_SUBDIRS = ["problems", "papers", "references", "knowledge", "web_ai", "data"]
 PROCESSED_CACHE = INBOX_ROOT / ".processed_files.json"
 
 
@@ -50,6 +50,8 @@ def scan_subdir(subdir_name):
     extensions = [".pdf"]
     if subdir_name == "web_ai":
         extensions.extend([".md", ".txt"])
+    elif subdir_name == "data":
+        extensions = [".csv", ".xlsx", ".xls"]
 
     files = []
     for ext in extensions:
@@ -116,3 +118,23 @@ def read_web_ai_file(filename):
         )
 
     return load_file_as_text(str(file_path))
+
+
+def read_data_file(filename):
+    """从 inbox/data/{filename} 读取表格文件并返回文本摘要。
+
+    调用 utils.load_tabular_file() 读取，支持 .csv / .xlsx / .xls。
+    若文件不存在，返回错误提示字符串。
+
+    Args:
+        filename (str): data 子目录下的文件名
+
+    Returns:
+        str: 表格文件文本摘要
+    """
+    from app.utils import load_tabular_file
+
+    file_path = INBOX_ROOT / "data" / filename
+    if not file_path.exists():
+        return f"❌ 文件不存在：inbox/data/{filename}"
+    return load_tabular_file(str(file_path))
