@@ -505,6 +505,13 @@ if st.session_state.phase == "input":
 elif st.session_state.phase == "topic_selection":
     st.header("📊 选题分析")
 
+    if st.button("⬅️ 返回上传赛题", key="back_to_input"):
+        st.session_state.phase = "input"
+        st.session_state.memory_logger.new_stage("input")
+        st.session_state.memory_logger.log_system_event("返回阶段: input", "用户从选题分析返回")
+        autosave()
+        st.rerun()
+
     topics = st.session_state.topics
     if "topic_sims" not in st.session_state:
         with st.spinner("正在检索历史数据,分析各选题..."):
@@ -558,6 +565,13 @@ elif st.session_state.phase == "topic_selection":
 # ============ Phase 3: Modeling ============
 elif st.session_state.phase == "modeling":
     st.header("🔬 数学建模方案")
+
+    if st.button("⬅️ 返回选题分析", key="back_to_topic"):
+        st.session_state.phase = "topic_selection"
+        st.session_state.memory_logger.new_stage("topic_selection")
+        st.session_state.memory_logger.log_system_event("返回阶段: topic_selection")
+        autosave()
+        st.rerun()
 
     selected_topic = st.session_state.selected_topic
     selected_sims = st.session_state.selected_sims
@@ -793,6 +807,12 @@ elif st.session_state.phase == "grill_me":
 elif st.session_state.phase == "coding":
     st.header("💻 代码生成")
 
+    if st.button("⬅️ 返回建模方案", key="back_to_modeling"):
+        st.session_state.phase = "modeling"
+        st.session_state.memory_logger.new_stage("modeling")
+        autosave()
+        st.rerun()
+
     if st.session_state.coding_result is None:
         with st.spinner("正在生成Python代码..."):
             data_context = ""
@@ -980,6 +1000,12 @@ python model_solution.py
 elif st.session_state.phase == "figure":
     st.header("📊 图表生成方案")
 
+    if st.button("⬅️ 返回代码生成", key="back_to_coding"):
+        st.session_state.phase = "coding"
+        st.session_state.memory_logger.new_stage("coding")
+        autosave()
+        st.rerun()
+
     if st.session_state.figure_descriptions is None:
         with st.spinner("正在设计图表方案..."):
             prompt = get_figure_prompt(
@@ -1019,6 +1045,12 @@ elif st.session_state.phase == "figure":
 # ============ Phase 8: Paper ============
 elif st.session_state.phase == "paper":
     st.header("📝 论文初稿")
+
+    if st.button("⬅️ 返回图表方案", key="back_to_figure"):
+        st.session_state.phase = "figure"
+        st.session_state.memory_logger.new_stage("figure")
+        autosave()
+        st.rerun()
 
     if st.session_state.paper_draft is None:
         with st.spinner("正在生成论文初稿..."):
@@ -1064,6 +1096,12 @@ elif st.session_state.phase == "paper":
 # ============ Phase 9: Polish ============
 elif st.session_state.phase == "polish":
     st.header("✨ 论文润色")
+
+    if st.button("⬅️ 返回论文初稿", key="back_to_paper"):
+        st.session_state.phase = "paper"
+        st.session_state.memory_logger.new_stage("paper")
+        autosave()
+        st.rerun()
 
     polish_type = st.selectbox("润色类型", ["润色", "翻译为英文", "学术语法修正", "逻辑优化"])
 
