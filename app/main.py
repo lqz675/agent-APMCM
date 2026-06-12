@@ -417,15 +417,9 @@ st.caption("基于 RAG + LLM + 多Skill 协作的数学建模助手")
 if st.session_state.phase == "input":
     st.header("📝 上传赛题 PDF")
 
-    restored_paths = st.session_state.get("uploaded_file_paths", [])
-    if restored_paths and st.session_state.get("state_restored"):
-        st.info("✅ 已从上次进度恢复，以下文件已加载：")
-        for p in restored_paths:
-            pp = Path(p)
-            fname = pp.name
-            fsize = pp.stat().st_size / 1024 if pp.exists() else 0
-            st.text(f"  📄 {fname}  ({fsize:.0f} KB)")
-        st.divider()
+    UPLOAD_ROOT = Path(__file__).resolve().parent.parent / "workspace" / "upload"
+    for d in [UPLOAD_ROOT / "1", UPLOAD_ROOT / "2", UPLOAD_ROOT / "3"]:
+        d.mkdir(parents=True, exist_ok=True)
 
     def _extract_pdf(file_bytes):
         from pypdf import PdfReader
@@ -438,30 +432,67 @@ if st.session_state.phase == "input":
                 txt += extracted + "\n"
         return txt.strip()
 
-    st.markdown("### 上传三个备选赛题 PDF 文件")
+    def _read_folder_topic(folder_num):
+        """从 workspace/upload/{folder_num}/ 读取第一个 PDF 文件"""
+        folder = UPLOAD_ROOT / str(folder_num)
+        if folder.exists():
+            pdfs = list(folder.glob("*.pdf"))
+            if pdfs:
+                return pdfs[0]
+        return None
+
+    # 扫描各文件夹中的已有文件
+    st.markdown(f"文件路径: `{UPLOAD_ROOT.absolute()}`")
+    st.caption("将赛题 PDF 放入对应子文件夹（1/2/3），或通过下方上传区域上传。要删除选题，从对应文件夹中删除 PDF 文件即可。")
+
     col1, col2, col3 = st.columns(3)
     uploaded_texts = [None, None, None]
     uploaded_names = [None, None, None]
+    topic_files = [None, None, None]
 
     for i, col in enumerate([col1, col2, col3]):
+        folder_num = str(i + 1)
+        folder = UPLOAD_ROOT / folder_num
         with col:
+            st.subheader(f"选题 {folder_num}")
+
+            # 显示已有文件
+            existing_pdf = _read_folder_topic(folder_num)
+            if existing_pdf:
+                topic_files[i] = existing_pdf
+                st.info(f"📄 {existing_pdf.name}")
+                if st.button("🗑️ 删除", key=f"del_topic_{i}"):
+                    existing_pdf.unlink()
+                    st.rerun()
+
+            # 上传区域
             uploaded = st.file_uploader(
-                f"选题 {i+1}", type=["pdf"], key=f"upload_{i}",
-                help=f"上传赛题{i+1}的PDF文件"
+                f"上传PDF", type=["pdf"], key=f"upload_{i}",
+                help=f"上传赛题{folder_num}，会保存到 upload/{folder_num}/"
             )
             if uploaded:
-                if f"extracted_{i}" not in st.session_state:
-                    file_bytes = uploaded.read()
-                    with st.spinner(f"解析选题{i+1}..."):
-                        st.session_state[f"extracted_{i}"] = _extract_pdf(file_bytes)
-                    st.session_state[f"uploaded_name_{i}"] = uploaded.name
-                    saved_path = copy_uploaded_file(st.session_state.session_id, file_bytes, uploaded.name)
-                    if str(saved_path) not in st.session_state.uploaded_file_paths:
-                        st.session_state.uploaded_file_paths.append(str(saved_path))
-                    autosave()
-                uploaded_texts[i] = st.session_state[f"extracted_{i}"]
-                uploaded_names[i] = st.session_state[f"uploaded_name_{i}"]
-                st.success(f"已解析: {uploaded.name}")
+                dest = folder / uploaded.name
+                dest.write_bytes(uploaded.getvalue())
+                with st.spinner(f"解析选题{folder_num}..."):
+                    topic_files[i] = dest
+                    st.session_state[f"extracted_{i}"] = _extract_pdf(dest.read_bytes())
+                st.session_state[f"uploaded_name_{i}"] = uploaded.name
+                autosave()
+                st.success(f"已保存: {uploaded.name}")
+                st.rerun()
+
+    # 从已有文件读取文本（跳过已解析的）
+    for i in range(3):
+        if topic_files[i]:
+            pdf_path = topic_files[i]
+            cache_key = f"extracted_{i}"
+            if not st.session_state.get(cache_key) or st.session_state.get(f"_file_mtime_{i}") != pdf_path.stat().st_mtime:
+                st.session_state[cache_key] = _extract_pdf(pdf_path.read_bytes())
+                st.session_state[f"_file_mtime_{i}"] = pdf_path.stat().st_mtime
+            st.session_state[f"uploaded_name_{i}"] = pdf_path.name
+            if st.session_state.get(cache_key):
+                uploaded_texts[i] = st.session_state[cache_key]
+                uploaded_names[i] = pdf_path.name
 
     if st.button("🚀 开始分析", type="primary", use_container_width=True):
         topics = []
