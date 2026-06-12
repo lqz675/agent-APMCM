@@ -210,3 +210,103 @@ def list_data_files(data_dir):
                 "relative": str(f.relative_to(data_dir)),
             })
     return results
+
+
+# ── 会话持久化 ──
+
+SESSION_KEYS = [
+    "phase", "topics", "selected_topic", "selected_topic_idx", "selected_sims",
+    "modeling_plan", "pressure_report", "pressure_test_result",
+    "prd_draft", "prd_final", "grill_rounds", "grill_result",
+    "coding_result", "figure_descriptions", "paper_draft", "polished_paper",
+    "paper_sections", "completed_stages", "reference_loaded",
+    "topic_recommendation", "topic_sims", "topic_scores",
+    "chat_history", "user_approach", "user_expectation",
+    "loaded_data_files",
+]
+
+
+def save_session_snapshot(session_id, session_state):
+    """将关键 session_state 序列化到 memory/{session_id}/session_snapshot.json"""
+    from pathlib import Path
+    import json
+
+    snapshot = {}
+    for key in SESSION_KEYS:
+        val = session_state.get(key)
+        if val is not None:
+            try:
+                json.dumps(val, ensure_ascii=False)
+                snapshot[key] = val
+            except (TypeError, ValueError):
+                snapshot[key] = str(val)
+
+    snapshot_dir = Path(__file__).resolve().parent.parent / "memory" / session_id
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    snap_path = snapshot_dir / "session_snapshot.json"
+    with open(snap_path, "w", encoding="utf-8") as f:
+        json.dump(snapshot, f, ensure_ascii=False, indent=2)
+    return str(snap_path)
+
+
+def load_session_snapshot(session_id):
+    """从 memory/{session_id}/session_snapshot.json 恢复会话状态"""
+    import json
+    from pathlib import Path
+
+    snap_path = Path(__file__).resolve().parent.parent / "memory" / session_id / "session_snapshot.json"
+    if not snap_path.exists():
+        return {}
+    with open(snap_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def list_saved_sessions():
+    """列出所有已保存的会话"""
+    from pathlib import Path
+    memory_root = Path(__file__).resolve().parent.parent / "memory"
+    if not memory_root.exists():
+        return []
+    sessions = []
+    for d in sorted(memory_root.iterdir(), reverse=True):
+        snap = d / "session_snapshot.json"
+        if snap.exists():
+            sessions.append({"session_id": d.name, "snapshot_path": str(snap)})
+    return sessions
+
+
+def build_context_from_workspace(session_state):
+    """重启后从 workspace 目录扫描文件，重建上下文摘要"""
+    from pathlib import Path
+
+    workspace = Path(__file__).resolve().parent.parent / "workspace" / session_state.get("session_id", "")
+    context_parts = []
+
+    prd_path = workspace / "PRD.md"
+    if prd_path.exists() and not session_state.get("prd_final"):
+        try:
+            content = prd_path.read_text(encoding="utf-8")[:2000]
+            session_state["prd_final"] = content
+            context_parts.append(f"PRD已从workspace恢复（{len(content)}字符）")
+        except Exception:
+            pass
+
+    code_path = workspace / "model_solution.py"
+    if code_path.exists() and not session_state.get("coding_result"):
+        try:
+            content = code_path.read_text(encoding="utf-8")[:3000]
+            session_state["coding_result"] = content
+            context_parts.append(f"代码已从workspace恢复（{len(content)}字符）")
+        except Exception:
+            pass
+
+    paper_path = workspace / "paper.md"
+    if paper_path.exists() and not session_state.get("paper_draft"):
+        try:
+            content = paper_path.read_text(encoding="utf-8")[:3000]
+            session_state["paper_draft"] = content
+            context_parts.append(f"论文已从workspace恢复（{len(content)}字符）")
+        except Exception:
+            pass
+
+    return context_parts

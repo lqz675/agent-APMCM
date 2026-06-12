@@ -33,7 +33,7 @@ from app.webai_bridge import (
     export_context_package, import_webai_response, list_export_files
 )
 from app.memory_logger import MemoryLogger
-from app.utils import load_tabular_file, list_data_files
+from app.utils import load_tabular_file, list_data_files, save_session_snapshot, load_session_snapshot, list_saved_sessions, build_context_from_workspace
 
 st.set_page_config(page_title="APMCM 数学建模 Agent", page_icon="🎓", layout="wide")
 
@@ -102,12 +102,72 @@ if st.session_state.memory_logger is None:
 
 ensure_inbox_dirs()
 
+# ── 会话持久化：自动保存 & 断点恢复 ──
+if "session_saved" not in st.session_state:
+    st.session_state.session_saved = False
+if "resume_attempted" not in st.session_state:
+    st.session_state.resume_attempted = False
+
+# 首次启动或刷新后，尝试恢复上次会话
+if not st.session_state.resume_attempted:
+    saved_sessions = list_saved_sessions()
+    if saved_sessions and st.session_state.phase == "input":
+        last = saved_sessions[0]
+        try:
+            snapshot = load_session_snapshot(last["session_id"])
+            if snapshot and snapshot.get("phase", "input") != "input":
+                st.session_state.session_id = last["session_id"]
+                for k, v in snapshot.items():
+                    if k not in ("rag", "logger", "memory_logger", "quota_monitor"):
+                        st.session_state[k] = v
+                st.session_state.memory_logger = MemoryLogger(st.session_state.session_id)
+                st.session_state.memory_logger.new_stage(st.session_state.phase)
+                st.session_state.memory_logger.log_system_event(
+                    "会话恢复", f"从 snapshot 恢复，阶段: {st.session_state.phase}"
+                )
+                # 从 workspace 重建上下文
+                restored = build_context_from_workspace(st.session_state)
+                for msg in restored:
+                    st.session_state.memory_logger.log_system_event("上下文重建", msg)
+                st.session_state.resume_attempted = True
+        except Exception:
+            pass
+    st.session_state.resume_attempted = True
+
+
+def _auto_save():
+    """每次关键状态变更后调用，序列化到磁盘"""
+    try:
+        save_session_snapshot(
+            st.session_state.session_id,
+            {k: st.session_state.get(k) for k in [
+                "phase", "topics", "selected_topic", "selected_topic_idx", "selected_sims",
+                "modeling_plan", "pressure_report", "prd_draft", "prd_final",
+                "grill_rounds", "coding_result", "figure_descriptions",
+                "paper_draft", "polished_paper", "paper_sections",
+                "completed_stages", "reference_loaded", "chat_history",
+                "topic_recommendation", "topic_sims", "topic_scores",
+                "loaded_data_files",
+            ]}
+        )
+        st.session_state.session_saved = True
+    except Exception:
+        pass
+
+
 logger = st.session_state.logger
 rag = st.session_state.rag
 
 # === 全局侧边栏：进度 + 额度监控 + 提问入口 ===
 with st.sidebar:
     st.header("📊 项目仪表盘")
+
+    if st.session_state.get("session_saved"):
+        st.caption(f"💾 会话已保存 · Session: {st.session_state.session_id}")
+    if st.session_state.phase != "input" and st.session_state.get("resume_attempted"):
+        saved = list_saved_sessions()
+        if saved and saved[0]["session_id"] == st.session_state.session_id:
+            st.success("✅ 上次会话已自动恢复")
 
     # 进度追踪
     all_stages = ["选题确认", "建模方法确认", "压力测试", "PRD生成",
@@ -272,8 +332,8 @@ with st.sidebar:
         st.session_state.memory_logger.log_message("user", user_question)
         ctx = f"""项目进度：{completed}
 当前阶段：{st.session_state.get('phase', '未知')}
-建模方案摘要：{st.session_state.get('modeling_plan', '')[:400]}
-PRD摘要：{st.session_state.get('prd_final', '')[:400]}"""
+建模方案摘要：{(st.session_state.get('modeling_plan') or '')[:400]}
+PRD摘要：{(st.session_state.get('prd_final') or st.session_state.get('prd_draft') or '')[:400]}"""
         from model import gpt_with_retry
         answer = gpt_with_retry(f"用户问题：{user_question}\n\n项目背景：{ctx}", max_tokens=500)
         qm.record("用户提问", qm.estimate_tokens(answer))
@@ -703,7 +763,7 @@ elif st.session_state.phase == "coding":
 
             readme_content = f"""# 数学建模代码
 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}
-赛题: {st.session_state.get('selected_topic', '')[:80]}
+赛题: {(st.session_state.get('selected_topic') or '')[:80]}
 
 ## 运行方式
 ```bash
@@ -712,7 +772,7 @@ python model_solution.py
 ```
 
 ## 建模方案摘要
-{st.session_state.get('modeling_plan', '')[:400]}
+{(st.session_state.get('modeling_plan') or '')[:400]}
 """
             (workspace / "README.md").write_text(readme_content, encoding="utf-8")
             st.success(f"✅ 代码已保存到 `{workspace.absolute()}`")
@@ -732,10 +792,10 @@ python model_solution.py
 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}
 
 ## 赛题（完整文本见 problem.txt）
-{st.session_state.get('selected_topic', '')[:300]}...
+{(st.session_state.get('selected_topic') or '')[:300]}...
 
 ## 已确认的建模方案（详见 modeling_plan.md）
-{st.session_state.get('modeling_plan', '')[:500]}...
+{(st.session_state.get('modeling_plan') or '')[:500]}...
 
 ## 你需要完成的工作
 请在 `solution/` 子目录创建以下文件，每个文件写完后立即运行验证：
@@ -1055,15 +1115,29 @@ if chat_input:
     st.session_state.memory_logger.log_message("user", chat_input)
     with st.spinner("Agent思考中..."):
         ctx = f"""当前阶段: {st.session_state.phase}
-当前选题: {st.session_state.get('selected_topic', '未选择')[:500]}
-建模方案摘要: {st.session_state.get('modeling_plan', '未生成')[:1000]}"""
-        response = chat([
-            {"role": "system", "content": f"你是APMCM数学建模Agent助手。\n{ctx}"},
-            {"role": "user", "content": chat_input}
-        ])
+已选赛题: {(st.session_state.get('selected_topic') or '未选择')[:500]}
+建模方案摘要: {(st.session_state.get('modeling_plan') or '未生成')[:800]}
+压力测试: {(st.session_state.get('pressure_report') or '未生成')[:300]}
+PRD: {(st.session_state.get('prd_final') or st.session_state.get('prd_draft') or '未生成')[:300]}
+代码摘要: {(st.session_state.get('coding_result') or '未生成')[:500]}
+论文摘要: {(st.session_state.get('paper_draft') or '未生成')[:300]}"""
+        messages = [
+            {"role": "system", "content": f"""你是APMCM数学建模Agent助手，全程参与用户的建模竞赛准备。你可以：
+- 解释当前阶段的决策逻辑和方法选择理由
+- 回答关于建模方案、代码、论文的任何问题
+- 根据用户反馈调整方向和策略
+请用中文回答，简洁有针对性。
+
+{ctx}"""},
+        ]
+        recent_history = st.session_state.chat_history[-20:]
+        messages.extend(recent_history)
+        response = chat(messages)
     st.session_state.chat_history.append({"role": "assistant", "content": response})
     st.session_state.memory_logger.log_message("assistant", response)
 
 for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
+
+_auto_save()

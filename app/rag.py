@@ -186,19 +186,9 @@ class RAG:
         except Exception:
             return None
 
-    def _search_dual(self, index, texts, files, query, hyde_doc,
-                     topk=5, threshold=None, bm25=None, alpha=HYBRID_ALPHA):
-        results = self._search(index, texts, files, query, topk * 2, threshold, bm25, alpha)
-        if hyde_doc:
-            hyde_results = self._search(index, texts, files, hyde_doc, topk * 2, threshold, bm25, alpha)
-            seen = {r["index"]: r for r in results}
-            for r in hyde_results:
-                boosted_score = r["score"] * 1.2
-                if r["index"] not in seen or seen[r["index"]]["score"] < boosted_score:
-                    seen[r["index"]] = r
-                    r["score"] = boosted_score
-            results = sorted(seen.values(), key=lambda x: x["score"], reverse=True)[:topk]
-        return results[:topk]
+    def _search(self, index, texts, files, query,
+                topk=5, threshold=None, bm25=None, alpha=HYBRID_ALPHA):
+        """双路混合检索：FAISS 向量 + BM25 关键词融合"""
         if index is None:
             return []
         th = threshold if threshold is not None else self.threshold
@@ -234,6 +224,20 @@ class RAG:
                 "index": int(idx)
             })
         return results
+
+    def _search_dual(self, index, texts, files, query, hyde_doc,
+                     topk=5, threshold=None, bm25=None, alpha=HYBRID_ALPHA):
+        results = self._search(index, texts, files, query, topk * 2, threshold, bm25, alpha)
+        if hyde_doc:
+            hyde_results = self._search(index, texts, files, hyde_doc, topk * 2, threshold, bm25, alpha)
+            seen = {r["index"]: r for r in results}
+            for r in hyde_results:
+                boosted_score = r["score"] * 1.2
+                if r["index"] not in seen or seen[r["index"]]["score"] < boosted_score:
+                    seen[r["index"]] = r
+                    r["score"] = boosted_score
+            results = sorted(seen.values(), key=lambda x: x["score"], reverse=True)[:topk]
+        return results[:topk]
 
     def query(self, question, topk=5, threshold=None, use_hyde=False, use_rerank=False):
         if use_hyde:
