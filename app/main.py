@@ -69,12 +69,14 @@ if "paper_draft" not in st.session_state:
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 if "session_id" not in st.session_state:
-    params = st.query_params
-    if "sid" in params:
-        st.session_state.session_id = params["sid"]
+    from pathlib import Path as _Path
+    _cur = _Path(__file__).resolve().parent.parent / "memory" / ".current_session"
+    if _cur.exists():
+        st.session_state.session_id = _cur.read_text(encoding="utf-8").strip()
     else:
         st.session_state.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-        st.query_params["sid"] = st.session_state.session_id
+        _cur.parent.mkdir(parents=True, exist_ok=True)
+        _cur.write_text(st.session_state.session_id, encoding="utf-8")
 if "quota_monitor" not in st.session_state:
     st.session_state.quota_monitor = QuotaMonitor(platform="Claude Sonnet")
 if "completed_stages" not in st.session_state:
@@ -110,43 +112,37 @@ ensure_inbox_dirs()
 # ── 会话持久化：自动保存 & 断点恢复 ──
 if "session_saved" not in st.session_state:
     st.session_state.session_saved = False
-if "resume_attempted" not in st.session_state:
-    st.session_state.resume_attempted = False
 
-# 首次启动或刷新后，尝试恢复上次会话
-if not st.session_state.resume_attempted:
-    saved_sessions = list_saved_sessions()
-    if saved_sessions and st.session_state.phase == "input":
-        last = saved_sessions[0]
-        try:
-            snapshot = load_session_snapshot(last["session_id"])
-            if snapshot and snapshot.get("phase", "input") != "input":
-                st.session_state.session_id = last["session_id"]
-                for k, v in snapshot.items():
-                    if k not in ("rag", "logger", "memory_logger", "quota_monitor"):
-                        st.session_state[k] = v
-                st.session_state.memory_logger = MemoryLogger(st.session_state.session_id)
-                st.session_state.memory_logger.new_stage(st.session_state.phase)
-                st.session_state.memory_logger.log_system_event(
-                    "会话恢复", f"从 snapshot 恢复，阶段: {st.session_state.phase}"
-                )
-                # 从 workspace 重建上下文
-                restored = build_context_from_workspace(st.session_state)
-                for msg in restored:
-                    st.session_state.memory_logger.log_system_event("上下文重建", msg)
-                # 恢复已上传的赛题文件
-                upload_dir = Path(__file__).resolve().parent.parent / "memory" / st.session_state.session_id / "uploads"
-                for i in range(1, 4):
-                    tf = upload_dir / f"topic_{i}.txt"
-                    nf = upload_dir / f"topic_{i}_name.txt"
-                    if tf.exists():
-                        st.session_state[f"extracted_{i-1}"] = tf.read_text(encoding="utf-8")
-                    if nf.exists():
-                        st.session_state[f"uploaded_name_{i-1}"] = nf.read_text(encoding="utf-8")
-                st.session_state.resume_attempted = True
-        except Exception:
-            pass
-    st.session_state.resume_attempted = True
+# 尝试从磁盘恢复上次会话（仅在还在input阶段且未恢复过时）
+if "session_restored" not in st.session_state and st.session_state.phase == "input":
+    st.session_state.session_restored = False
+    try:
+        snapshot = load_session_snapshot(st.session_state.session_id)
+        if snapshot and snapshot.get("phase", "input") != "input":
+            for k, v in snapshot.items():
+                if k not in ("rag", "logger", "memory_logger", "quota_monitor", "session_id"):
+                    st.session_state[k] = v
+            st.session_state.memory_logger = MemoryLogger(st.session_state.session_id)
+            st.session_state.memory_logger.new_stage(st.session_state.phase)
+            st.session_state.memory_logger.log_system_event(
+                "会话恢复", f"从 snapshot 恢复，阶段: {st.session_state.phase}"
+            )
+            # 从 workspace 重建上下文
+            restored = build_context_from_workspace(st.session_state)
+            for msg in restored:
+                st.session_state.memory_logger.log_system_event("上下文重建", msg)
+            # 恢复已上传的赛题文件
+            upload_dir = Path(__file__).resolve().parent.parent / "memory" / st.session_state.session_id / "uploads"
+            for i in range(1, 4):
+                tf = upload_dir / f"topic_{i}.txt"
+                nf = upload_dir / f"topic_{i}_name.txt"
+                if tf.exists():
+                    st.session_state[f"extracted_{i-1}"] = tf.read_text(encoding="utf-8")
+                if nf.exists():
+                    st.session_state[f"uploaded_name_{i-1}"] = nf.read_text(encoding="utf-8")
+            st.session_state.session_restored = True
+    except Exception:
+        pass
 
 
 def _auto_save():
@@ -361,6 +357,22 @@ st.caption("基于 RAG + LLM + 多Skill 协作的数学建模助手")
 if st.session_state.phase == "input":
     st.header("📝 上传赛题 PDF")
 
+    # 检查是否有从磁盘恢复的已上传文件
+    upload_dir = Path(__file__).resolve().parent.parent / "memory" / st.session_state.session_id / "uploads"
+    restored_files = []
+    for i in range(1, 4):
+        tf = upload_dir / f"topic_{i}.txt"
+        nf = upload_dir / f"topic_{i}_name.txt"
+        if tf.exists():
+            st.session_state.setdefault(f"extracted_{i-1}", tf.read_text(encoding="utf-8"))
+        if nf.exists():
+            st.session_state.setdefault(f"uploaded_name_{i-1}", nf.read_text(encoding="utf-8"))
+        if st.session_state.get(f"extracted_{i-1}"):
+            restored_files.append((i, st.session_state.get(f"uploaded_name_{i-1}", f"选题{i}")))
+
+    if restored_files:
+        st.info(f"💾 检测到上次会话已上传 {len(restored_files)} 个文件：{', '.join(n for _, n in restored_files)}")
+
     def _extract_pdf(file_bytes):
         from pypdf import PdfReader
         from io import BytesIO
@@ -399,6 +411,13 @@ if st.session_state.phase == "input":
 
     if st.button("🚀 开始分析", type="primary", use_container_width=True):
         topics = [t for t in uploaded_texts if t]
+        # 如果 file_uploader 没检测到文件但从磁盘恢复了，使用恢复的文件
+        if not topics:
+            for i in range(3):
+                extracted = st.session_state.get(f"extracted_{i}")
+                if extracted:
+                    topics.append(extracted)
+                    uploaded_names[i] = st.session_state.get(f"uploaded_name_{i}", f"选题{i+1}")
         if not topics:
             st.error("请至少上传一个赛题 PDF")
         else:
