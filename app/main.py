@@ -363,7 +363,8 @@ PRD摘要：{(st.session_state.get('prd_final') or st.session_state.get('prd_dra
 st.title("🎓 APMCM 数学建模比赛 Agent")
 st.caption("基于 RAG + LLM + 多Skill 协作的数学建模助手")
 
-work_col, chat_col = st.columns([3, 2])
+# 三栏布局：左侧边栏 | 中间操作区 | 右侧对话栏
+work_col, chat_col = st.columns([5, 2])
 
 with work_col:
 
